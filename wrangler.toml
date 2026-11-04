@@ -1,9 +1,9 @@
-name = "ds-fashionshop"
+name = "neo-pro"
 pages_build_output_dir = "./dist"
 compatibility_date = "2026-03-01"
 compatibility_flags = ["nodejs_compat"]
 
 [[d1_databases]]
-binding = "DB"
+binding = "D1"
 database_name = "neodb"
 database_id = "bf24b08c-4037-4183-b809-92624487ac76"
