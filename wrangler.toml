@@ -7,5 +7,5 @@ directory = "./dist"
 
 [[d1_databases]]
 binding = "D1"
-database_name = "neodb"
-database_id = "bf24b08c-4037-4183-b809-92624487ac76"
+database_name = "fashiondb"
+database_id = "7910b282-abcd-4eab-b335-c96619df2d5d"
