@@ -1,0 +1,8 @@
+name = "ds-fashionshop"
+compatibility_date = "2026-10-19"
+pages_build_output_dir = "dist"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "fashiondb"
+database_id = "7910b282-abcd-4eab-b335-c96619df2d5d"
