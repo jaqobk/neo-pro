@@ -1,8 +1,9 @@
 name = "ds-fashionshop"
-compatibility_date = "2026-10-19"
-pages_build_output_dir = "dist"
+pages_build_output_dir = "./dist"
+compatibility_date = "2026-03-01"
+compatibility_flags = ["nodejs_compat"]
 
 [[d1_databases]]
 binding = "DB"
-database_name = "fashiondb"
-database_id = "7910b282-abcd-4eab-b335-c96619df2d5d"
+database_name = "neodb"
+database_id = "bf24b08c-4037-4183-b809-92624487ac76"
