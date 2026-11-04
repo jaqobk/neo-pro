@@ -1,4 +1,4 @@
-name = "neo-pro"
+name = "erp"
 compatibility_date = "2026-03-01"
 compatibility_flags = ["nodejs_compat"]
 
