@@ -7,5 +7,5 @@ directory = "./dist"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "fashiondb"
-database_id = "7910b282-abcd-4eab-b335-c96619df2d5d"
+database_name = "kingdb"
+database_id = "959f8b01-05b8-4d0e-8801-81832fc0d2f9"
