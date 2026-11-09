@@ -1,10 +1,11 @@
 
 import React, { useState, useEffect } from 'react';
+import SearchableSelect from './SearchableSelect';
 import { 
   BarChart3, ShoppingBag, ArrowUpRight, DollarSign, Package, 
   Settings, ShieldAlert, Plus, Trash2, Edit, CheckCircle, 
   CreditCard, RefreshCw, FileText, Download, Upload,
-  Smartphone, Calendar, TrendingUp, Layers, Clock, ToggleLeft, ToggleRight, LogOut, Lock, Check, X, Eye, Wallet, Users, Building, AlertTriangle, Printer, Database, Key, Truck, UserCheck, Briefcase, CalendarDays, Banknote, Percent
+  Smartphone, Calendar, TrendingUp, Layers, Clock, ToggleLeft, ToggleRight, LogOut, Lock, Check, X, Eye, Wallet, Users, Building, AlertTriangle, Printer, Database, Key, Truck, UserCheck, Briefcase, CalendarDays, Banknote, Percent, MapPin, PieChart, RotateCcw, ArrowRightLeft
 } from 'lucide-react';
 
 export default function App() {
@@ -14,7 +15,7 @@ export default function App() {
     const loginTime = localStorage.getItem('erp_login_time');
     if (savedUser && loginTime) {
       const hoursPassed = (Date.now() - parseInt(loginTime, 10)) / (1000 * 60 * 60);
-      if (hoursPassed < 24) return true;
+      if (hoursPassed < 6) return true;
       localStorage.removeItem('erp_current_user');
       localStorage.removeItem('erp_login_time');
     }
@@ -33,7 +34,14 @@ export default function App() {
   const [superTenants, setSuperTenants] = useState([]);
   const [superPlans, setSuperPlans] = useState([]);
   const [superPayments, setSuperPayments] = useState([]);
-  const [superTab, setSuperTab] = useState('tenants');
+  const [superTab, setSuperTab] = useState('reports');
+  const [superSearch, setSuperSearch] = useState('');
+  const [superFilter, setSuperFilter] = useState('all');
+  const [poApprovalLimit, setPoApprovalLimit] = useState(0);
+  const [poApprovalLimitDraft, setPoApprovalLimitDraft] = useState('0');
+  const [returnRequests, setReturnRequests] = useState([]);
+  const [returnReasonDraft, setReturnReasonDraft] = useState('');
+  const [auditActionFilter, setAuditActionFilter] = useState('');
   const [appHydrating, setAppHydrating] = useState(false);
   const [superProfile, setSuperProfile] = useState({ username: '', displayName: '' });
   const [platformKpis, setPlatformKpis] = useState(null);
@@ -63,26 +71,7 @@ export default function App() {
       headers['Content-Type'] = 'application/json';
     }
     return fetch(url, { ...options, headers }).then(async (res) => {
-      try {
-        if (res.ok) {
-          // Keep client session alive while API accepts the token
-          localStorage.setItem('erp_login_time', Date.now().toString());
-        } else if (res.status === 401) {
-          // Session expired or invalid — force re-login (once)
-          const already = sessionStorage.getItem('erp_session_expired_alert');
-          if (!already) {
-            try { sessionStorage.setItem('erp_session_expired_alert', '1'); } catch (_) {}
-            try {
-              localStorage.removeItem('erp_auth_token');
-              localStorage.removeItem('erp_current_user');
-              localStorage.removeItem('erp_login_time');
-              localStorage.removeItem('erp_login_privileges');
-            } catch (_) {}
-            alert('Your session expired. Please log in again.');
-            window.location.reload();
-          }
-        }
-      } catch (_) {}
+      // Do not hard-logout on every 401 (race / one failed call); caller can handle message
       return res;
     });
   };
@@ -91,7 +80,7 @@ export default function App() {
     const loginTime = localStorage.getItem('erp_login_time');
     if (savedUser && loginTime) {
       const hoursPassed = (Date.now() - parseInt(loginTime, 10)) / (1000 * 60 * 60);
-      if (hoursPassed < 24) {
+      if (hoursPassed < 6) {
         try { return JSON.parse(savedUser); } catch (e) { return null; }
       }
     }
@@ -132,10 +121,7 @@ export default function App() {
   const [salesLedgerSubTab, setSalesLedgerSubTab] = useState('ledger');
   const [cashUpForm, setCashUpForm] = useState({ countedCash: '', countedMpesa: '', notes: '' });
   const [cashUpModalOpen, setCashUpModalOpen] = useState(false);
-  const [purchaseApprovalLimit, setPurchaseApprovalLimit] = useState(0);
-  const [pendingApprovals, setPendingApprovals] = useState([]);
-
-
+  const [dashboardApprovalFilter, setDashboardApprovalFilter] = useState('all'); // all | leaves | purchases | returns
 
   const [stockMovements, setStockMovements] = useState([]);
   const [transferForm, setTransferForm] = useState({ fromBranchId: '', toBranchId: '', lines: [{ itemId: '', qty: '' }] });
@@ -320,13 +306,97 @@ export default function App() {
   const [expensePaidToFilter, setExpensePaidToFilter] = useState('');
 
   // --- Business Profile State ---
-  const [shopProfile, setShopProfile] = useState({
-    name: '',
-    tagline: '',
-    currency: 'KSh',
-    phone: '',
-    location: ''
+  const [shopProfile, setShopProfile] = useState(() => {
+    try {
+      const savedTenant = JSON.parse(localStorage.getItem('erp_tenant') || 'null');
+      const tid = (savedTenant && savedTenant.id) || 'tenant-default';
+      const cached = JSON.parse(localStorage.getItem('erp_shop_profile__' + tid) || 'null');
+      if (cached && typeof cached === 'object') {
+        return {
+          name: cached.name || savedTenant?.name || '',
+          tagline: cached.tagline || '',
+          currency: cached.currency || 'KSh',
+          phone: cached.phone || '',
+          location: cached.location || '',
+          logo: cached.logo || '',
+          creditPolicy: cached.creditPolicy || 'warn'
+        };
+      }
+      return {
+        name: savedTenant?.name || '',
+        tagline: '',
+        currency: 'KSh',
+        phone: '',
+        location: '',
+        logo: '',
+        creditPolicy: 'warn'
+      };
+    } catch (_) {
+      return {
+        name: '',
+        tagline: '',
+        currency: 'KSh',
+        phone: '',
+        location: '',
+        logo: '',
+        creditPolicy: 'warn'
+      };
+    }
   });
+
+  const [creditPolicy, setCreditPolicy] = useState(() => {
+    try {
+      const savedTenant = JSON.parse(localStorage.getItem('erp_tenant') || 'null');
+      const tid = (savedTenant && savedTenant.id) || 'tenant-default';
+      const cached = JSON.parse(localStorage.getItem('erp_shop_profile__' + tid) || 'null');
+      return cached?.creditPolicy || 'warn';
+    } catch (_) {
+      return 'warn';
+    }
+  });
+
+  const compressLogoImage = (file) => {
+    return new Promise((resolve, reject) => {
+      if (!file) return reject(new Error('No file provided'));
+      if (!file.type || !file.type.startsWith('image/')) return reject(new Error('File is not an image'));
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX_DIM = 256;
+          let width = img.width;
+          let height = img.height;
+          if (width > height) {
+            if (width > MAX_DIM) {
+              height = Math.round((height * MAX_DIM) / width);
+              width = MAX_DIM;
+            }
+          } else {
+            if (height > MAX_DIM) {
+              width = Math.round((width * MAX_DIM) / height);
+              height = MAX_DIM;
+            }
+          }
+          canvas.width = Math.max(1, width);
+          canvas.height = Math.max(1, height);
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            const compressed = canvas.toDataURL('image/jpeg', 0.82);
+            resolve(compressed);
+          } else {
+            resolve(e.target.result);
+          }
+        };
+        img.onerror = () => reject(new Error('Failed to load image into canvas'));
+        img.src = e.target.result;
+      };
+      reader.onerror = () => reject(new Error('Failed to read image file'));
+      reader.readAsDataURL(file);
+    });
+  };
 
   // Dynamic States with Full Mock Dataset
   const [categories, setCategories] = useState([]);
@@ -398,10 +468,6 @@ export default function App() {
       reportExpense: {view:true, create:false, update:false, delete:false, ownOnly:false},
       reportHr: {view:true, create:false, update:false, delete:false, ownOnly:false},
       reportCustomer: {view:true, create:false, update:false, delete:false, ownOnly:false},
-      reportInventory: {view:true, create:false, update:false, delete:false, ownOnly:false},
-      reportAging: {view:true, create:false, update:false, delete:false, ownOnly:false},
-      reportFinancial: {view:true, create:false, update:false, delete:false, ownOnly:false},
-      reportLedger: {view:true, create:false, update:false, delete:false, ownOnly:false},
       settings: {view:false, create:false, update:false, delete:false, ownOnly:false},
       purchase: {view:true, create:true, update:true, delete:false, ownOnly:false},
       employees: {view:true, create:true, update:true, delete:false, ownOnly:false},
@@ -462,7 +528,7 @@ export default function App() {
     { id: 'var-colour', name: 'Colour' }
   ]);
   const [varianceDraft, setVarianceDraft] = useState('');
-  const [customerForm, setCustomerForm] = useState({ name: '', phone: '', location: '', eligibility: ['Paid'], salesTermId: '', paymentTerm: '', tags: '', priceList: 'retail', kraPin: '', loyaltyPoints: 0 });
+  const [customerForm, setCustomerForm] = useState({ name: '', phone: '', location: '', eligibility: ['Paid'], salesTermId: '', paymentTerm: '', tags: '', priceList: 'retail', kraPin: '', loyaltyPoints: 0, creditLimit: 0 });
   
   const [addUserModalOpen, setAddUserModalOpen] = useState(false);
   const [addRoleModalOpen, setAddRoleModalOpen] = useState(false);
@@ -572,26 +638,26 @@ export default function App() {
           if (Array.isArray(data.sales)) {
             const mapped = data.sales.map(s => {
               const items = typeof s.items === 'string' ? JSON.parse(s.items || '[]') : (s.items || []);
+              let paymentHistory = s.paymentHistory;
+              try { if (typeof paymentHistory === 'string') paymentHistory = JSON.parse(paymentHistory || '[]'); } catch (_) { paymentHistory = []; }
+              let returnHistory = s.returnHistory;
+              try { if (typeof returnHistory === 'string') returnHistory = JSON.parse(returnHistory || '[]'); } catch (_) { returnHistory = []; }
               const totalAmount = parseFloat(s.totalAmount) || 0;
               const paidAmount = parseFloat(s.paidAmount) || 0;
               let balanceDue = s.balanceDue;
               if (balanceDue === undefined || balanceDue === null || balanceDue === '') balanceDue = Math.max(0, totalAmount - paidAmount);
               else balanceDue = parseFloat(balanceDue) || 0;
-              return { ...s, items, totalAmount, paidAmount, balanceDue };
+              return { ...s, items, paymentHistory: Array.isArray(paymentHistory) ? paymentHistory : [], returnHistory: Array.isArray(returnHistory) ? returnHistory : [], totalAmount, paidAmount, balanceDue };
             });
             setSales(mapped);
           }
           if (Array.isArray(data.customers)) {
-            const custs = data.customers.map(c => {
-              let el = c.eligibility;
-              if (Array.isArray(el)) el = el.filter(Boolean).map(String);
-              else if (typeof el === 'string') {
-                try { const p = JSON.parse(el); el = Array.isArray(p) ? p.map(String) : el.split(',').map(s => s.trim()).filter(Boolean); }
-                catch (_) { el = el.split(',').map(s => s.trim()).filter(Boolean); }
-              } else el = ['Paid'];
-              if (!el || !el.length) el = ['Paid'];
-              return { ...c, eligibility: el };
-            });
+            const custs = data.customers.map(c => ({
+              ...c,
+              loyaltyPoints: parseFloat(c.loyaltyPoints) || 0,
+              creditLimit: parseFloat(c.creditLimit) || 0,
+              eligibility: typeof c.eligibility === 'string' ? JSON.parse(c.eligibility || '["Paid"]') : (c.eligibility || ['Paid'])
+            }));
             setCustomers(custs);
           }
           if (Array.isArray(data.expenses)) {
@@ -602,7 +668,9 @@ export default function App() {
               if (isNaN(balanceDue)) balanceDue = Math.max(0, amount - paid);
               balanceDue = Math.max(0, amount - paid);
               const paymentStatus = balanceDue <= 0 ? 'Paid' : (paid > 0 ? 'Partially Paid' : 'Unpaid');
-              return { ...e, amount, paidAmount: paid, balanceDue, paymentStatus };
+              let paymentHistory = e.paymentHistory;
+              try { if (typeof paymentHistory === 'string') paymentHistory = JSON.parse(paymentHistory || '[]'); } catch (_) { paymentHistory = []; }
+              return { ...e, amount, paidAmount: paid, balanceDue, paymentStatus, paymentHistory: Array.isArray(paymentHistory) ? paymentHistory : [] };
             }));
           }
           if (Array.isArray(data.categories)) setCategories(data.categories);
@@ -612,7 +680,13 @@ export default function App() {
             setSuppliers(data.suppliers);
           }
           if (Array.isArray(data.purchaseOrders)) {
-            setPurchaseOrders(data.purchaseOrders);
+            setPurchaseOrders(data.purchaseOrders.map(p => {
+              let ph = p.paymentHistory;
+              try { if (typeof ph === 'string') ph = JSON.parse(ph || '[]'); } catch (_) { ph = []; }
+              let rh = p.returnHistory;
+              try { if (typeof rh === 'string') rh = JSON.parse(rh || '[]'); } catch (_) { rh = []; }
+              return { ...p, paymentHistory: Array.isArray(ph) ? ph : [], returnHistory: Array.isArray(rh) ? rh : [] };
+            }));
           }
           if (data.users?.length) {
             setUsers(data.users.filter(u => u.name !== 'Sir Jycob' && u.id !== 'u-jycob').map(u => {
@@ -622,7 +696,10 @@ export default function App() {
             }));
           }
           if (data.roles?.length) setRoles(data.roles.map(r => ({ ...r, privileges: typeof r.privileges === 'string' ? JSON.parse(r.privileges) : r.privileges })));
-          if (data.shopProfile) setShopProfile(data.shopProfile);
+          if (data.shopProfile) {
+            setShopProfile(data.shopProfile);
+            if (data.shopProfile.creditPolicy) setCreditPolicy(data.shopProfile.creditPolicy);
+          }
           if (Array.isArray(data.branches)) {
             setBranches(data.branches);
             setMaxBranches(data.maxBranches || 1);
@@ -693,36 +770,30 @@ export default function App() {
           if (data.tenantSettings) {
             try {
               const ts = data.tenantSettings;
-              if (ts.paymentMethods != null) { try { const pm = typeof ts.paymentMethods === 'string' ? JSON.parse(ts.paymentMethods) : ts.paymentMethods; if (Array.isArray(pm) && pm.length) setPaymentMethods(pm); else if (!Array.isArray(pm)) setPaymentMethods([{ id: 'pm-cash', name: 'Cash', startingBalance: 0, currentBalance: 0 }, { id: 'pm-mpesa', name: 'M-Pesa', startingBalance: 0, currentBalance: 0 }]); } catch (_) {} }
+              if (ts.paymentMethods) { const pm = typeof ts.paymentMethods === 'string' ? JSON.parse(ts.paymentMethods) : ts.paymentMethods; if (Array.isArray(pm) && pm.length) setPaymentMethods(pm); }
               if (ts.salesTerms) { const st = typeof ts.salesTerms === 'string' ? JSON.parse(ts.salesTerms) : ts.salesTerms; if (Array.isArray(st) && st.length) setSalesTerms(st); }
               if (ts.loyalty) { const loy = typeof ts.loyalty === 'string' ? JSON.parse(ts.loyalty) : ts.loyalty; if (loy) setLoyaltySettings(loy); }
               if (ts.etims) { const et = typeof ts.etims === 'string' ? JSON.parse(ts.etims) : ts.etims; if (et) setEtimsSettings(et); }
               if (ts.salesTargets) { const tgt = typeof ts.salesTargets === 'string' ? JSON.parse(ts.salesTargets) : ts.salesTargets; if (tgt) setSalesTargets(tgt); }
-              if (ts.tasks != null) { try { const tk = typeof ts.tasks === 'string' ? JSON.parse(ts.tasks) : ts.tasks; setTasks(Array.isArray(tk) ? tk : []); } catch (_) { setTasks([]); } } else { setTasks([]); }
-              if (ts.cashups != null) { try {
-                const cu = typeof ts.cashups === 'string' ? JSON.parse(ts.cashups) : ts.cashups;
-                const tid = (() => { try { return String((tenantInfo && tenantInfo.id) || JSON.parse(localStorage.getItem('erp_tenant') || 'null')?.id || ''); } catch { return ''; } })();
-                const arr = Array.isArray(cu) ? cu : [];
-                // Strict tenant filter — drop legacy/other-business rows
-                const cleaned = tid ? arr.filter(x => x && String(x.tenantId || '') === tid) : [];
-                setCashUpHistory(cleaned);
-                // Persist cleanup if DB still held foreign cashups
-                if (cleaned.length !== arr.length) {
-                  apiFetch('/api/tenant-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cashups: cleaned }) }).catch(() => {});
-                }
-              } catch (_) { setCashUpHistory([]); } } else { setCashUpHistory([]); }
+              if (ts.tasks) { const tk = typeof ts.tasks === 'string' ? JSON.parse(ts.tasks) : ts.tasks; if (Array.isArray(tk)) setTasks(tk); }
+              if (ts.cashups) { const cu = typeof ts.cashups === 'string' ? JSON.parse(ts.cashups) : ts.cashups; if (Array.isArray(cu)) setCashUpHistory(cu); }
               if (ts.auditLog) { const al = typeof ts.auditLog === 'string' ? JSON.parse(ts.auditLog) : ts.auditLog; if (Array.isArray(al)) setAuditLog(al); }
               if (ts.itemVariances) {
                 const iv = typeof ts.itemVariances === 'string' ? JSON.parse(ts.itemVariances) : ts.itemVariances;
                 if (Array.isArray(iv) && iv.length) setItemVariances(iv);
-              if (ts.purchaseApprovalLimit != null) setPurchaseApprovalLimit(parseFloat(ts.purchaseApprovalLimit) || 0);
-              if (ts.pendingApprovals != null) {
-                try {
-                  const pa = typeof ts.pendingApprovals === 'string' ? JSON.parse(ts.pendingApprovals) : ts.pendingApprovals;
-                  setPendingApprovals(Array.isArray(pa) ? pa : []);
-                } catch (_) { setPendingApprovals([]); }
               }
-
+              if (ts.poApprovalLimit !== undefined && ts.poApprovalLimit !== null) {
+                const lim = Math.max(0, parseFloat(ts.poApprovalLimit) || 0);
+                setPoApprovalLimit(lim);
+                setPoApprovalLimitDraft(String(lim));
+              }
+              if (ts.returnRequests) {
+                const rr = typeof ts.returnRequests === 'string' ? JSON.parse(ts.returnRequests || '[]') : ts.returnRequests;
+                if (Array.isArray(rr)) setReturnRequests(rr);
+              }
+              if (ts.creditPolicy) {
+                setCreditPolicy(ts.creditPolicy);
+                setShopProfile(p => ({ ...p, creditPolicy: ts.creditPolicy }));
               }
             } catch (e) {}
           }
@@ -745,15 +816,8 @@ export default function App() {
                   }).catch(() => {});
                 } catch (_) {}
               };
-              // Do NOT migrate global erp_tasks / erp_cashups — they are not tenant-scoped and leak across businesses.
-              // Only tenant-keyed local keys may be migrated.
-              try {
-                const tidM = (() => { try { return JSON.parse(localStorage.getItem('erp_tenant') || 'null')?.id; } catch { return null; } })();
-                if (tidM) {
-                  pushJson('erp_tasks__' + tidM, 'tasks');
-                  pushJson('erp_cashups__' + tidM, 'cashups');
-                }
-              } catch (_) {}
+              pushJson('erp_tasks', 'tasks');
+              pushJson('erp_cashups', 'cashups');
               pushJson('erp_sales_targets', 'salesTargets');
               pushJson('erp_loyalty', 'loyalty');
               pushJson('erp_etims', 'etims');
@@ -997,7 +1061,36 @@ export default function App() {
   };
 
   const handleSaveExpense = async (expenseToSave) => {
+    const prevExp = (expenses || []).find(e => e.id === expenseToSave.id);
+    const prevPaid = prevExp ? (parseFloat(prevExp.paidAmount ?? prevExp.amount) || 0) : 0;
     const normalized = normalizeExpense(expenseToSave);
+    let hist = normalized.paymentHistory ?? prevExp?.paymentHistory;
+    try { if (typeof hist === 'string') hist = JSON.parse(hist || '[]'); } catch (_) { hist = []; }
+    if (!Array.isArray(hist)) hist = [];
+    if (prevExp && hist.length === 0 && prevPaid > 0) {
+      hist = [{
+        id: `exppay-init-${normalized.id}`,
+        date: prevExp.date || normalized.date,
+        amount: prevPaid,
+        paymentMethod: prevExp.paymentMethod || 'Cash',
+        mpesaCode: prevExp.mpesaCode || ''
+      }];
+    }
+    const deltaPaid = Math.round(((parseFloat(normalized.paidAmount) || 0) - prevPaid) * 100) / 100;
+    if (deltaPaid > 0) {
+      hist = [
+        ...hist,
+        {
+          id: `exppay-${Date.now()}`,
+          date: new Date().toISOString(),
+          amount: deltaPaid,
+          paymentMethod: normalized.paymentMethod || 'Cash',
+          mpesaCode: String(normalized.paymentMethod || '').toLowerCase().includes('m-pesa') ? (normalized.mpesaCode || '') : ''
+        }
+      ];
+      logAudit('payment', 'expense', `${normalized.id} · ${shopProfile.currency} ${deltaPaid} via ${normalized.paymentMethod || 'Cash'} (${normalized.description || normalized.category || ''})`);
+    }
+    normalized.paymentHistory = hist;
     const exists = (expenses || []).some(e => e.id === normalized.id);
     const nextList = exists
       ? expenses.map(e => e.id === normalized.id ? normalized : e)
@@ -1032,14 +1125,14 @@ export default function App() {
 
   const handleDeleteExpense = async (expenseId) => {
     if (!window.confirm('Are you sure you want to delete this expense?')) return;
+    const target = (expenses || []).find(e => e.id === expenseId);
     persistExpenses(expenses.filter(e => e.id !== expenseId));
     setSelectedExpenseItem(null);
+    logAudit('delete', 'expense', `${expenseId}${target?.description ? ' (' + target.description + ')' : ''}`);
     try {
       await apiFetch(`/api/expenses/${expenseId}`, { method: 'DELETE' });
-      logAudit('delete', 'expense', expenseId);
     } catch (err) {
       console.warn('Expense deleted locally', err);
-      logAudit('delete', 'expense', expenseId);
     }
   };
 
@@ -1062,13 +1155,7 @@ export default function App() {
   // --- SETTINGS DATABASE SYNC HANDLERS ---
   const handleSaveShopProfile = async () => {
     try {
-      const payload = {
-        name: shopProfile.name || '',
-        tagline: shopProfile.tagline || '',
-        currency: shopProfile.currency || 'KSh',
-        phone: shopProfile.phone || '',
-        location: shopProfile.location || ''
-      };
+      const payload = { ...shopProfile, creditPolicy };
       const response = await apiFetch('/api/shop-profile', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -1076,19 +1163,30 @@ export default function App() {
       });
       const data = await response.json().catch(() => ({}));
       if (response.ok) {
-        setShopProfile(prev => ({ ...prev, ...payload }));
-        if (tenantInfo && payload.name) {
-          const nextTenant = { ...tenantInfo, name: payload.name };
-          setTenantInfo(nextTenant);
-          try { localStorage.setItem('erp_tenant', JSON.stringify(nextTenant)); } catch (e) {}
+        if (data.profile) {
+          setShopProfile(prev => ({ ...prev, ...data.profile }));
+          if (data.profile.creditPolicy) setCreditPolicy(data.profile.creditPolicy);
         }
+        if (shopProfile.name) {
+          setTenantInfo(prev => {
+            const next = prev ? { ...prev, name: shopProfile.name } : { id: 'tenant-default', name: shopProfile.name };
+            try { localStorage.setItem('erp_tenant', JSON.stringify(next)); } catch (e) {}
+            return next;
+          });
+        }
+        try {
+          const tid = (tenantInfo && tenantInfo.id) || 'tenant-default';
+          localStorage.setItem('erp_shop_profile__' + tid, JSON.stringify(payload));
+        } catch (_) {}
+        saveTenantSettingsPartial({ creditPolicy });
+        logAudit('update', 'business_profile', `Updated business profile: ${shopProfile.name || 'Shop'}`);
         alert('Business profile updated and saved to database successfully!');
       } else {
-        alert(data.error || ('Failed to update business profile (HTTP ' + response.status + ').'));
+        alert(data.error || 'Failed to update business profile in database.');
       }
     } catch (err) {
       console.error('Error saving shop profile:', err);
-      alert('Failed to update business profile in database.');
+      alert('Network error: Failed to update business profile in database.');
     }
   };
 
@@ -1165,10 +1263,6 @@ export default function App() {
         reportExpense: {view:false, create:false, update:false, delete:false, ownOnly:false},
         reportHr: {view:false, create:false, update:false, delete:false, ownOnly:false},
         reportCustomer: {view:false, create:false, update:false, delete:false, ownOnly:false},
-        reportInventory: {view:false, create:false, update:false, delete:false, ownOnly:false},
-        reportAging: {view:false, create:false, update:false, delete:false, ownOnly:false},
-        reportFinancial: {view:false, create:false, update:false, delete:false, ownOnly:false},
-        reportLedger: {view:false, create:false, update:false, delete:false, ownOnly:false},
         settings: {view:false, create:false, update:false, delete:false, ownOnly:false},
         purchase: {view:false, create:false, update:false, delete:false, ownOnly:false},
         employees: {view:false, create:false, update:false, delete:false, ownOnly:false},
@@ -1194,7 +1288,7 @@ export default function App() {
 
   const handleSaveRole = async (roleToSave) => {
     try {
-      const allKeys = ['dashboard','pos','sales','inventory','expenses','laybys','customers','suppliers','reports','reportComprehensive','reportSales','reportPurchase','reportExpense','reportHr','reportCustomer','reportInventory','reportAging','reportFinancial','reportLedger','reportSalesMostItems','reportSalesMostCategories','reportSalesDormant','reportSalesBestPeople','reportSalesKpis','reportSalesPeople','reportSalesCreditsLayby','reportSalesTax','reportSalesByLocation','reportPurchaseSummary','reportPurchaseByCategory','reportPurchaseCogs','reportPurchaseUnpaid','reportPurchaseTax','reportExpenseHighCategories','reportExpenseFrequent','reportExpenseUnpaid','reportExpenseTax','reportHrSummary','reportHrLeaveSalary','reportCustomerStatement','reportInventoryValuation','reportInventoryDeadStock','reportInventoryLowStock','reportInventoryBalance','reportInventoryBranch','reportAgingSummary','reportFinancialPnl','reportFinancialBalance','reportFinancialCashflow','reportFinancialComparative','reportFinancialTax','reportLedgerTrial','reportLedgerJournals','reportLedgerReconcile','settings','purchase','employees','payroll','hr'];
+      const allKeys = ['dashboard','pos','sales','inventory','expenses','laybys','customers','suppliers','reports','reportComprehensive','reportSales','reportPurchase','reportExpense','reportHr','reportCustomer','reportSalesMostItems','reportSalesMostCategories','reportSalesDormant','reportSalesBestPeople','reportSalesKpis','reportSalesPeople','reportSalesCreditsLayby','reportSalesTax','reportPurchaseSummary','reportPurchaseByCategory','reportPurchaseCogs','reportPurchaseUnpaid','reportPurchaseTax','reportExpenseHighCategories','reportExpenseFrequent','reportExpenseUnpaid','reportExpenseTax','reportHrSummary','reportHrLeaveSalary','reportCustomerStatement','reportInventory','reportAging','reportFinancial','reportLedger','settings','purchase','employees','payroll','hr'];
       const mergedPrivs = {};
       allKeys.forEach(k => {
         const p = roleToSave.privileges?.[k];
@@ -1363,6 +1457,7 @@ export default function App() {
       let userBranches = currentUser?.allowedBranches;
       try { if (typeof userBranches === 'string') userBranches = JSON.parse(userBranches || '[]'); } catch (e) { userBranches = []; }
       if (Array.isArray(userBranches) && userBranches.length) return userBranches.map(String);
+      if (currentUser?.branchId) return [String(currentUser.branchId)];
       let priv = loginPrivileges;
       if (!priv || typeof priv !== 'object') {
         const role = (roles || []).find(r => (r.name || '').toLowerCase() === (currentUser?.role || '').toLowerCase());
@@ -1373,9 +1468,42 @@ export default function App() {
       return list && list.length ? list.map(String) : null;
     } catch (e) { return null; }
   })();
+
+  const hasMultiLocationAccess = Boolean(
+    (currentUser?.role || '').toLowerCase() === 'admin' ||
+    (earlyAllowedBranchIds === null && (branches || []).length > 1) ||
+    (Array.isArray(earlyAllowedBranchIds) && earlyAllowedBranchIds.length > 1)
+  );
+  const isRestrictedToSingleLocation = (currentUser?.role || '').toLowerCase() !== 'admin' && !hasMultiLocationAccess;
+
+  const activeBranchId = (() => {
+    if (isRestrictedToSingleLocation) {
+      if (earlyAllowedBranchIds && earlyAllowedBranchIds.length) {
+        const match = (branches || []).find(b => earlyAllowedBranchIds.includes(String(b.id)));
+        if (match) return match.id;
+      }
+      const def = (branches || []).find(b => b.isDefault) || (branches || [])[0];
+      return def ? def.id : '';
+    }
+    if (currentBranchId && currentBranchId !== 'all') {
+      if (!earlyAllowedBranchIds || earlyAllowedBranchIds.includes(String(currentBranchId))) return currentBranchId;
+    }
+    const pool = (branches || []).filter(b => !earlyAllowedBranchIds || earlyAllowedBranchIds.includes(String(b.id)));
+    const def = pool.find(b => b.isDefault) || pool[0];
+    return def ? def.id : '';
+  })();
+
   const filterByBranch = (list) => {
     if (!list || !Array.isArray(list)) return [];
     let rows = list;
+    if (isRestrictedToSingleLocation) {
+      const targetId = activeBranchId;
+      if (!targetId) return rows;
+      return rows.filter(row => {
+        if (!row?.branchId) return true;
+        return resolveRowBranchId(row) === targetId;
+      });
+    }
     if (earlyAllowedBranchIds) {
       rows = rows.filter(row => {
         // Rows with no branchId are treated as shared / legacy — always include for allowed users
@@ -1391,49 +1519,8 @@ export default function App() {
       return resolveRowBranchId(row) === currentBranchId;
     });
   };
-  const activeBranchId = (() => {
-    if (currentBranchId && currentBranchId !== 'all') {
-      if (!earlyAllowedBranchIds || earlyAllowedBranchIds.includes(String(currentBranchId))) return currentBranchId;
-    }
-    const pool = (branches || []).filter(b => !earlyAllowedBranchIds || earlyAllowedBranchIds.includes(String(b.id)));
-    const def = pool.find(b => b.isDefault) || pool[0];
-    return def ? def.id : '';
-  })();
 
   // Normalize sale line items (API / localStorage may store JSON string)
-  const asArr = (v) => Array.isArray(v) ? v : [];
-  const formatPaymentHistoryEntry = (p) => {
-    const when = p?.date ? new Date(p.date).toLocaleString() : '—';
-    const cur = (shopProfile && shopProfile.currency) || 'KSh';
-    const cash = parseFloat(p?.cashAmount);
-    const mpesa = parseFloat(p?.mpesaAmount);
-    let methodPart = '';
-    if (!isNaN(cash) || !isNaN(mpesa)) {
-      const bits = [];
-      if (!isNaN(cash) && cash > 0) bits.push('Cash (' + cash + ')');
-      if (!isNaN(mpesa) && mpesa > 0) bits.push('M-Pesa (' + mpesa + ')');
-      methodPart = bits.join(' + ') || (p?.paymentMethod || '—');
-    } else {
-      methodPart = p?.paymentMethod || '—';
-    }
-    const txn = (p?.mpesaCode && p.mpesaCode !== 'N/A') ? ('TXN ' + p.mpesaCode) : '';
-    const amt = p?.amount != null ? (cur + ' ' + Number(p.amount).toLocaleString()) : '';
-    return { when, methodPart, txn, amt };
-  };
-  const normalizeEligibility = (v) => {
-    if (Array.isArray(v)) return v.filter(Boolean).map(String);
-    if (v == null || v === '') return ['Paid'];
-    if (typeof v === 'string') {
-      try {
-        const p = JSON.parse(v);
-        if (Array.isArray(p)) return p.filter(Boolean).map(String);
-      } catch (_) {}
-      // plain string or comma-separated
-      const parts = v.split(',').map(s => s.trim()).filter(Boolean);
-      return parts.length ? parts : ['Paid'];
-    }
-    return ['Paid'];
-  };
   const parseSaleItems = (saleOrItems) => {
     const raw = saleOrItems && typeof saleOrItems === 'object' && !Array.isArray(saleOrItems) ? saleOrItems.items : saleOrItems;
     if (Array.isArray(raw)) return raw;
@@ -1583,8 +1670,8 @@ export default function App() {
   const totalOperatingExpenses = filteredExpenses.reduce((acc, e) => acc + (e.amount || 0), 0);
   const netProfit = grossProfit - totalOperatingExpenses;
 
-  const cashPm = asArr(paymentMethods).find(p => p.name === 'Cash');
-  const mpesaPm = asArr(paymentMethods).find(p => p.name === 'M-Pesa' || p.name === 'Mpesa');
+  const cashPm = paymentMethods.find(p => p.name === 'Cash');
+  const mpesaPm = paymentMethods.find(p => p.name === 'M-Pesa' || p.name === 'Mpesa');
   const cashStart = (cashPm?.currentBalance != null && cashPm.currentBalance !== '' ? cashPm.currentBalance : cashPm?.startingBalance) || 0;
   const mpesaStart = (mpesaPm?.currentBalance != null && mpesaPm.currentBalance !== '' ? mpesaPm.currentBalance : mpesaPm?.startingBalance) || 0;
   const cashSalesTotal = filteredSales.filter(s => s.paymentMethod === 'Cash' || s.paymentMethod?.includes('Cash')).reduce((sum, s) => sum + (s.paidAmount || s.totalAmount || 0), 0);
@@ -1625,6 +1712,89 @@ export default function App() {
     });
   });
   const topSellingCategories = Object.values(dashboardCategoryMap).sort((a, b) => b.totalSales - a.totalSales).slice(0, 5);
+
+  // 7-Day Sales & Revenue Trend
+  const last7DaysSalesData = (() => {
+    const res = [];
+    const now = new Date();
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const dateKey = `${yyyy}-${mm}-${dd}`;
+      const dayName = d.toLocaleDateString('en-US', { weekday: 'short' });
+      const dayDisplay = `${dayName} ${dd}`;
+      
+      const salesOnDay = (branchSales || []).filter(s => {
+        const sDate = String(s.date || '').slice(0, 10);
+        return sDate === dateKey;
+      });
+      const total = salesOnDay.reduce((acc, s) => acc + (Number(s.totalAmount) || 0), 0);
+      const count = salesOnDay.length;
+      res.push({ date: dateKey, dayDisplay, dayName, total, count });
+    }
+    return res;
+  })();
+  const maxDaySale = Math.max(...last7DaysSalesData.map(d => d.total), 1);
+  const total7DayRevenue = last7DaysSalesData.reduce((acc, d) => acc + d.total, 0);
+  const avgDailyRevenue = Math.round(total7DayRevenue / 7);
+
+  // Sales by Payment Method Breakdown (Donut Chart)
+  const paymentBreakdownData = (() => {
+    const map = {};
+    (filteredSales || []).forEach(s => {
+      let raw = (s.paymentMethod || 'Cash').trim();
+      let key = 'Cash';
+      if (raw.toLowerCase().includes('mpesa') || raw.toLowerCase().includes('m-pesa')) key = 'M-Pesa';
+      else if (raw.toLowerCase().includes('cash')) key = 'Cash';
+      else if (raw.toLowerCase().includes('credit')) key = 'Credit';
+      else if (raw.toLowerCase().includes('layby')) key = 'Layby';
+      else if (raw.toLowerCase().includes('card') || raw.toLowerCase().includes('bank')) key = 'Card/Bank';
+      else key = raw || 'Other';
+
+      if (!map[key]) map[key] = { label: key, amount: 0, count: 0 };
+      map[key].amount += (Number(s.totalAmount) || 0);
+      map[key].count += 1;
+    });
+    const colors = {
+      'Cash': '#10b981',
+      'M-Pesa': '#0ea5e9',
+      'Credit': '#f59e0b',
+      'Layby': '#8b5cf6',
+      'Card/Bank': '#ec4899',
+      'Other': '#64748b'
+    };
+    const total = Object.values(map).reduce((sum, item) => sum + item.amount, 0);
+    return Object.values(map)
+      .map(item => ({
+        ...item,
+        color: colors[item.label] || '#6366f1',
+        pct: total > 0 ? (item.amount / total) * 100 : 0
+      }))
+      .sort((a, b) => b.amount - a.amount);
+  })();
+
+  // Operating Expenses by Category Breakdown (Donut Chart)
+  const expenseBreakdownData = (() => {
+    const map = {};
+    (filteredExpenses || []).forEach(e => {
+      const cat = (e.category || 'General Expense').trim();
+      if (!map[cat]) map[cat] = { label: cat, amount: 0, count: 0 };
+      map[cat].amount += (Number(e.amount) || 0);
+      map[cat].count += 1;
+    });
+    const palette = ['#f43f5e', '#f97316', '#eab308', '#06b6d4', '#a855f7', '#3b82f6', '#10b981'];
+    const total = Object.values(map).reduce((sum, item) => sum + item.amount, 0);
+    return Object.values(map)
+      .sort((a, b) => b.amount - a.amount)
+      .map((item, idx) => ({
+        ...item,
+        color: palette[idx % palette.length],
+        pct: total > 0 ? (item.amount / total) * 100 : 0
+      }));
+  })();
 
   // Top 5 Customers for Dashboard
   const dashboardCustomerMap = {};
@@ -1795,7 +1965,7 @@ export default function App() {
       .replace(/\\/g, '\\\\')
       .replace(/\(/g, '\\(')
       .replace(/\)/g, '\\)');
-    const shop = shopProfile?.name || tenantInfo?.name || 'NEO ERP';
+    const shop = shopProfile?.name || tenantInfo?.name || 'A40 ERP';
     const meta = 'Generated ' + new Date().toLocaleString();
     // Landscape A4
     const pageWidth = 842;
@@ -2029,25 +2199,9 @@ export default function App() {
     return { ...item, hasSales: sold, stockValue: val };
   }).filter(i => !i.hasSales && (parseFloat(i.quantity) || 0) > 0);
   const deadStockValue = deadStockList.reduce((s, i) => s + (i.stockValue || 0), 0);
-  const currentTenantId = () => {
-    try {
-      const t = tenantInfo?.id || JSON.parse(localStorage.getItem('erp_tenant') || 'null')?.id;
-      return t ? String(t) : '';
-    } catch (_) { return ''; }
-  };
-  const sanitizeCashUps = (list) => {
-    const tid = currentTenantId();
-    const arr = Array.isArray(list) ? list : [];
-    if (!tid) return [];
-    // Only keep entries that belong to this tenant (legacy entries without tenantId are dropped to stop cross-business leaks)
-    return arr.filter(cu => cu && String(cu.tenantId || '') === tid).map(cu => ({ ...cu, tenantId: tid }));
-  };
   const saveCashUps = (next) => {
-    const tid = currentTenantId();
-    const stamped = (Array.isArray(next) ? next : []).map(cu => ({ ...cu, tenantId: tid || cu.tenantId || '' }));
-    const cleaned = tid ? stamped.filter(cu => String(cu.tenantId || '') === tid) : [];
-    setCashUpHistory(cleaned);
-    apiFetch('/api/tenant-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cashups: cleaned }) }).catch(() => {});
+    setCashUpHistory(next);
+    apiFetch('/api/tenant-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cashups: next }) }).catch(() => {});
   };
   const agingBucket = (deadlineOrDate) => {
     const d = String(deadlineOrDate || '').slice(0, 10);
@@ -2298,7 +2452,7 @@ export default function App() {
     const totalPaidNum = cashPaidNum + mpesaPaidNum + redeemCredit;
     const balanceAmt = Math.max(0, cartTotal - totalPaidNum);
 
-    const allowedEligibility = normalizeEligibility(customerObj?.eligibility?.length ? customerObj.eligibility : ['Paid', 'Credit', 'Layby']);
+    const allowedEligibility = customerObj?.eligibility || ['Paid', 'Credit', 'Layby'];
     const eligList = Array.isArray(allowedEligibility) ? allowedEligibility : ['Paid'];
     const paidOnly = eligList.length === 1 && String(eligList[0]).toLowerCase() === 'paid';
 
@@ -2320,6 +2474,45 @@ export default function App() {
     if (posSaleType !== 'Paid' && !eligList.includes(posSaleType)) {
       alert(`Customer "${posSelectedCustomer}" is not eligible for ${posSaleType} sales! Allowed types: ${eligList.join(', ')}`);
       return;
+    }
+
+    // Customer Max Credit Limit Enforcement (Stop Sale vs Warning Alert Policy)
+    if (posSaleType === 'Credit' || balanceAmt > 0.009) {
+      const custCreditLimit = parseFloat(customerObj?.creditLimit) || 0;
+      if (custCreditLimit > 0) {
+        const currentDebt = (sales || [])
+          .filter(s => (s.customerName === posSelectedCustomer || (customerObj?.id && s.customerId === customerObj.id)) && (parseFloat(s.balanceDue) || 0) > 0.009)
+          .reduce((sum, s) => sum + (parseFloat(s.balanceDue) || 0), 0);
+        const projectedDebt = currentDebt + balanceAmt;
+        if (projectedDebt > custCreditLimit + 0.009) {
+          const excess = projectedDebt - custCreditLimit;
+          const curr = shopProfile.currency || 'KSh';
+          const effPolicy = creditPolicy || shopProfile.creditPolicy || 'warn';
+          if (effPolicy === 'stop') {
+            alert(
+              `🛑 SALE BLOCKED — CREDIT LIMIT EXCEEDED!\n\n` +
+              `Customer: ${posSelectedCustomer}\n` +
+              `Max Credit Limit: ${curr} ${custCreditLimit.toLocaleString()}\n` +
+              `Current Outstanding Debt: ${curr} ${currentDebt.toLocaleString()}\n` +
+              `This Sale Balance Due: ${curr} ${balanceAmt.toLocaleString()}\n` +
+              `Projected Total Debt: ${curr} ${projectedDebt.toLocaleString()} (Exceeds limit by ${curr} ${excess.toLocaleString()})\n\n` +
+              `Business owner policy is set to STOP SALE when credit limit is exceeded. Sale cannot proceed until customer clears existing debt or credit limit is increased.`
+            );
+            return;
+          } else {
+            const proceed = window.confirm(
+              `⚠️ WARNING: CUSTOMER CREDIT LIMIT EXCEEDED!\n\n` +
+              `Customer: ${posSelectedCustomer}\n` +
+              `Max Credit Limit: ${curr} ${custCreditLimit.toLocaleString()}\n` +
+              `Current Outstanding Debt: ${curr} ${currentDebt.toLocaleString()}\n` +
+              `This Sale Balance Due: ${curr} ${balanceAmt.toLocaleString()}\n` +
+              `Projected Total Debt: ${curr} ${projectedDebt.toLocaleString()} (Exceeds limit by ${curr} ${excess.toLocaleString()})\n\n` +
+              `Do you wish to override the credit limit and continue selling to this customer?`
+            );
+            if (!proceed) return;
+          }
+        }
+      }
     }
 
     // Never accept payment above the sale total
@@ -2354,10 +2547,21 @@ export default function App() {
 
     const finalDateObj = posSaleDate ? new Date(`${posSaleDate}T${new Date().toTimeString().split(' ')[0]}`).toISOString() : new Date().toISOString();
 
+    const resolvedMpesaCode = mpesaPaidNum > 0 ? (posMpesaCode || 'MPESA' + Math.floor(Math.random() * 899999 + 100000)) : 'N/A';
+    const initialSalePaid = Math.min(totalPaidNum, cartTotal);
+    const initialPaymentHistory = initialSalePaid > 0 ? [{
+      id: `spay-${Date.now()}`,
+      date: finalDateObj,
+      amount: initialSalePaid,
+      paymentMethod: paymentMethodStr,
+      mpesaCode: mpesaPaidNum > 0 ? resolvedMpesaCode : ''
+    }] : [];
+
     const newSale = {
       id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       branchId: activeBranchId || undefined,
       date: finalDateObj,
+      customerId: customerObj?.id || '',
       customerName: posSelectedCustomer,
       saleType: posSaleType,
       items: JSON.stringify(posCart.map(i => ({ id: i.id, name: i.name, price: i.price, cogs: Math.max(0, Number(i.buyingPrice) || 0), category: i.category, trackInventory: isTrackedInventory(i), qty: i.cartQty, returnedQty: 0, returnedSaleableQty: 0 }))),
@@ -2368,11 +2572,12 @@ export default function App() {
       taxName: taxSettings.salesTaxName || 'VAT',
       taxInclusive: !!posTaxInclusive,
       paymentMethod: paymentMethodStr,
-      mpesaCode: mpesaPaidNum > 0 ? (posMpesaCode || 'MPESA' + Math.floor(Math.random() * 899999 + 100000)) : 'N/A',
+      mpesaCode: resolvedMpesaCode,
+      paymentHistory: initialPaymentHistory,
       cashier: currentUser?.name || 'Staff',
       createdBy: currentUser?.name || currentUser?.id || 'Staff',
-      paidAmount: Math.min(totalPaidNum, cartTotal),
-      balanceDue: Math.max(0, cartTotal - Math.min(totalPaidNum, cartTotal)),
+      paidAmount: initialSalePaid,
+      balanceDue: Math.max(0, cartTotal - initialSalePaid),
       cashPaid: cashPaidNum,
       mpesaPaid: mpesaPaidNum,
       deadline: posDeadline || new Date().toISOString().split('T')[0],
@@ -2399,10 +2604,11 @@ export default function App() {
       }
     }
 
-    const saleRecord = { ...newSale, items: JSON.parse(newSale.items) };
+    const saleRecord = { ...newSale, items: JSON.parse(newSale.items), paymentHistory: initialPaymentHistory };
     // Server-first: only update local state after DB accepts the sale
     let serverOk = false;
     let serverMsg = '';
+    let serverCustomerLoyalty = null;
     try {
       const res = await apiFetch('/api/sales', {
         method: 'POST',
@@ -2414,6 +2620,7 @@ export default function App() {
         try {
           const d = await res.json();
           if (d && d.journalId) serverMsg = 'Ledger journal: ' + d.journalId;
+          if (d && d.customerLoyalty) serverCustomerLoyalty = d.customerLoyalty;
         } catch (_) {}
       } else {
         try { const d = await res.json(); serverMsg = d.error || ('HTTP ' + res.status); } catch (_) { serverMsg = 'HTTP ' + res.status; }
@@ -2443,6 +2650,9 @@ export default function App() {
     setInventory(updatedInventory);
     const nextSales = [saleRecord, ...sales];
     setSales(nextSales);
+    if (initialSalePaid > 0) {
+      logAudit('payment', 'sales', `${newSale.id} · ${shopProfile.currency} ${initialSalePaid} via ${paymentMethodStr} (${posSelectedCustomer})`);
+    }
     // Stock movement history (server + local)
     try {
       posCart.forEach(ci => {
@@ -2469,11 +2679,12 @@ export default function App() {
     if (loyaltySettings.enabled && customerObj) {
       const earned = newSale.loyaltyPointsEarned || 0;
       const redeemed = newSale.loyaltyPointsRedeemed || 0;
-      if (earned > 0 || redeemed > 0) {
-        const pts = Math.max(0, (parseFloat(customerObj.loyaltyPoints) || 0) + earned - redeemed);
+      if (earned > 0 || redeemed > 0 || serverCustomerLoyalty) {
+        const pts = serverCustomerLoyalty && typeof serverCustomerLoyalty.loyaltyPoints === 'number'
+          ? serverCustomerLoyalty.loyaltyPoints
+          : Math.max(0, (parseFloat(customerObj.loyaltyPoints) || 0) + earned - redeemed);
         const upd = { ...customerObj, loyaltyPoints: pts };
         setCustomers(customers.map(c => c.id === customerObj.id ? upd : c));
-        try { await apiFetch(`/api/customers/${customerObj.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(upd) }); } catch (e) {}
       }
     }
   };
@@ -2531,7 +2742,8 @@ export default function App() {
     const newCust = {
       id: `cust-${Date.now()}`,
       createdBy: currentUser?.name || currentUser?.id || '',
-      ...customerForm
+      ...customerForm,
+      creditLimit: parseFloat(customerForm.creditLimit) || 0
     };
 
     try {
@@ -2542,7 +2754,7 @@ export default function App() {
       });
       if (res.ok) {
         setCustomers([newCust, ...customers]);
-        setCustomerForm({ name: '', phone: '', location: '', eligibility: ['Paid'], salesTermId: '', paymentTerm: '' });
+        setCustomerForm({ name: '', phone: '', location: '', eligibility: ['Paid'], salesTermId: '', paymentTerm: '', tags: '', priceList: 'retail', kraPin: '', loyaltyPoints: 0, creditLimit: 0 });
         setNewCustomerModalOpen(false);
       } else {
         alert('Failed to add customer to database.');
@@ -2762,11 +2974,13 @@ export default function App() {
         paymentStatus: 'Paid',
         paymentMethod: method,
         mpesaCode: '',
+        paymentHistory: [{ id: `exppay-${Date.now()}`, date: new Date().toISOString(), amount: net, paymentMethod: method, mpesaCode: '' }],
         payer: currentUser?.name || 'Admin',
         paidTo: rec.employeeName || 'Employee',
         taxAmount: 0
       };
       setExpenses(prev => [exp, ...prev]);
+      logAudit('payment', 'payroll', `${rec.employeeName} (${rec.period}) · ${shopProfile.currency} ${net} via ${method}`);
       try { await apiFetch('/api/expenses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(exp) }); } catch (e) {}
     }
     try {
@@ -2878,56 +3092,91 @@ export default function App() {
     setSalesReturnDisposition('Saleable');
     setSalesReturnQtys(qtys);
     setSalesReturnMethod((sale.paymentMethod || 'Cash').includes('M-Pesa') ? 'M-Pesa' : 'Cash');
+    setReturnReasonDraft('');
     setSalesReturnModalOpen(true);
   };
 
   const handleProcessSalesReturn = async () => {
-    if (!(isAdminUser || canUpdate('sales'))) {
-      submitPendingApproval('sales_return', `Sales return on ${(salesReturnSale && (salesReturnSale.invoiceNo || salesReturnSale.id)) || 'sale'}`, null, { saleId: salesReturnSale?.id, qtys: salesReturnQtys, method: salesReturnMethod });
-      alert('You do not have Update permission on Sales. A sales-return approval request was sent to a manager.');
-      return;
-    }
-
     if (!salesReturnSale) return;
     const items = salesReturnSale.items || [];
     let refundSubtotal = 0;
+    const summaryParts = [];
     items.forEach((it, idx) => {
       const ret = Math.min(Math.max(0, parseInt(salesReturnQtys[idx], 10) || 0), Math.max(0, (Number(it.qty) || 0) - (Number(it.returnedQty) || 0)));
-      if (ret > 0) refundSubtotal += (it.price || 0) * ret;
+      if (ret > 0) {
+        refundSubtotal += (it.price || 0) * ret;
+        summaryParts.push(`${it.name || 'Item'} ×${ret}`);
+      }
     });
     if (refundSubtotal <= 0) {
       alert('Select at least one item quantity to return.');
       return;
     }
-    // Same tax / refund math as before (for payment-method UI); server applies authoritative sale + stock update
     const origSub = items.reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0) || salesReturnSale.totalAmount || 1;
     const origTax = parseFloat(salesReturnSale.taxAmount) || 0;
     const refundTax = origSub > 0 ? (refundSubtotal / origSub) * origTax : 0;
     const refundTotal = Math.round((refundSubtotal + (salesReturnSale.taxInclusive ? 0 : refundTax)) * 100) / 100;
     const actualRefund = Math.min(refundTotal, Math.max(0, Number(salesReturnSale.paidAmount) || 0));
+    const returnPayload = {
+      saleId: salesReturnSale.id,
+      returnQtys: Object.fromEntries(Object.entries(salesReturnQtys).map(([k, v]) => [k, Number(v) || 0])),
+      disposition: salesReturnDisposition,
+      method: salesReturnMethod,
+      taxInclusive: !!salesReturnSale.taxInclusive
+    };
+
+    // Users WITHOUT sales.update must seek Manager approval instead of directly mutating stock/refunds
+    if (!(isAdminUser || canUpdate('sales'))) {
+      try {
+        const reqRes = await apiFetch('/api/return-requests', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            kind: 'sale',
+            refId: salesReturnSale.id,
+            partyName: salesReturnSale.customerName || 'Walk-in',
+            summary: summaryParts.join(', '),
+            estimatedAmount: refundTotal,
+            reason: returnReasonDraft || '',
+            payload: returnPayload
+          })
+        });
+        const reqData = await reqRes.json().catch(() => ({}));
+        if (!reqRes.ok) {
+          alert(reqData.error || 'Could not submit sales return request.');
+          return;
+        }
+        if (Array.isArray(reqData.returnRequests)) setReturnRequests(reqData.returnRequests);
+        else if (reqData.request) setReturnRequests(prev => [reqData.request, ...(prev || [])]);
+        logAudit('return_request', 'sales_return', `Sale ${salesReturnSale.id} (${summaryParts.join(', ')}) · Est ${shopProfile.currency} ${refundTotal} — awaiting Manager approval`);
+        setSalesReturnModalOpen(false);
+        setSalesReturnSale(null);
+        setSelectedSaleItem(null);
+        setReturnReasonDraft('');
+        alert('Sales Return request submitted to Manager for approval.');
+      } catch (e) {
+        alert('Network error submitting sales return request.');
+      }
+      return;
+    }
 
     try {
       const res = await apiFetch('/api/sales-return', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          saleId: salesReturnSale.id,
-          returnQtys: Object.fromEntries(Object.entries(salesReturnQtys).map(([k, v]) => [k, Number(v) || 0])),
-          disposition: salesReturnDisposition,
-          method: salesReturnMethod,
-          taxInclusive: !!salesReturnSale.taxInclusive
-        })
+        body: JSON.stringify(returnPayload)
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         alert(data.error || 'Sales return failed.');
         return;
       }
-      // Apply server sale + inventory to local state
       if (data.sale) {
         let saleItems = data.sale.items;
         try { saleItems = typeof saleItems === 'string' ? JSON.parse(saleItems || '[]') : (saleItems || []); } catch (_) {}
-        const merged = { ...data.sale, items: saleItems, type: data.sale.saleType };
+        let ph = data.sale.paymentHistory;
+        try { if (typeof ph === 'string') ph = JSON.parse(ph || '[]'); } catch (_) { ph = []; }
+        const merged = { ...data.sale, items: saleItems, paymentHistory: Array.isArray(ph) ? ph : [], type: data.sale.saleType };
         setSales(sales.map(s => s.id === merged.id ? merged : s));
       }
       if (Array.isArray(data.inventory) && data.inventory.length) {
@@ -2936,7 +3185,6 @@ export default function App() {
           return prev.map(inv => byId[inv.id] ? { ...inv, ...byId[inv.id] } : inv);
         });
       }
-      // Payment account outflow (same rule: not an expense)
       if (actualRefund > 0) {
         const methodName = salesReturnMethod.toLowerCase();
         setPaymentMethods(prev => {
@@ -2952,10 +3200,10 @@ export default function App() {
           return next;
         });
       }
+      logAudit('sales_return', 'sales', `Sale ${salesReturnSale.id} · Refund ${shopProfile.currency} ${(data.refundTotal ?? refundTotal)} via ${salesReturnMethod}`);
       setSalesReturnModalOpen(false);
       setSalesReturnSale(null);
       setSelectedSaleItem(null);
-      logAudit('sales_return', 'sales', salesReturnSale?.id || '');
       alert(`Sales return processed. Refund: ${shopProfile.currency} ${(data.refundTotal ?? refundTotal).toLocaleString()} via ${salesReturnMethod}. Inventory updated.`);
     } catch (e) {
       alert('Network error processing sales return.');
@@ -2967,12 +3215,21 @@ export default function App() {
     setPurchaseOrders(next);
   };
   const upsertPO = async (updated) => {
+    const prevPO = (purchaseOrders || []).find(p => p.id === updated.id);
     persistPOs((purchaseOrders || []).map(p => p.id === updated.id ? updated : p));
     try {
       const res = await apiFetch(`/api/purchase_orders/${updated.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated) });
+      if (res.status === 403) {
+        const d = await res.json().catch(() => ({}));
+        if (prevPO) persistPOs((purchaseOrders || []).map(p => p.id === updated.id ? prevPO : p));
+        alert(d.error || 'Admin approval is required for this Purchase Order.');
+        return false;
+      }
       if (!res.ok) throw new Error('PO upsert failed');
+      return true;
     } catch (e) {
       try { await apiFetch('/api/purchase_orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated) }); } catch (e2) { console.warn('PO kept locally', e2); }
+      return true;
     }
   };
 
@@ -2987,7 +3244,6 @@ export default function App() {
       alert('No remaining quantity to return on this PO.');
       return;
     }
-    // Build return lines from multi-item PO or single-item fallback
     let lines = [];
     try {
       const raw = typeof po.items === 'string' ? JSON.parse(po.items || '[]') : (po.items || []);
@@ -3014,17 +3270,12 @@ export default function App() {
     setPurchaseReturnSettlement('Supplier Credit Note');
     setPurchaseReturnRefundMethod('Cash');
     setPurchaseReturnQty(maxRet);
+    setReturnReasonDraft('');
     setPurchaseReturnModalOpen(true);
   };
 
   const handleProcessPurchaseReturn = async () => {
     if (!purchaseReturnPO) return;
-    if (!(isAdminUser || canUpdate('purchase'))) {
-      submitPendingApproval('purchase_return', `Purchase return on ${purchaseReturnPO.id}`, null, { poId: purchaseReturnPO.id, qtys: purchaseReturnLineQtys });
-      alert('You do not have Update permission on Purchase. A purchase-return approval request was sent to a manager.');
-      return;
-    }
-
     const po = purchaseReturnPO;
     const already = po.returnedQty || 0;
     const wasReceived = !!(po.received || ['Received', 'Payment', 'Purchase Return'].includes(po.workflowStatus));
@@ -3033,7 +3284,6 @@ export default function App() {
       return;
     }
     const maxRet = Math.max(0, (Number(po.quantity) || 0) - already);
-    // Prefer per-line quantities from the modal; fall back to single total
     let requestedRet = 0;
     const lineEntries = Object.entries(purchaseReturnLineQtys || {});
     if (lineEntries.length) {
@@ -3050,17 +3300,54 @@ export default function App() {
       return;
     }
     const payMethod = purchaseReturnRefundMethod || po.paymentMethod || 'Cash';
+    const unitCost = (Number(po.quantity) || 0) > 0 ? (Number(po.amount) || 0) / Number(po.quantity) : (Number(po.cost) || 0);
+    const estVal = Math.round(requestedRet * unitCost * 100) / 100;
+    const returnPayload = {
+      poId: po.id,
+      returnQty: requestedRet,
+      settlement: purchaseReturnSettlement,
+      paymentMethod: payMethod
+    };
+
+    // Users WITHOUT purchase.update must seek Manager approval
+    if (!(isAdminUser || canUpdate('purchase'))) {
+      try {
+        const reqRes = await apiFetch('/api/return-requests', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            kind: 'purchase',
+            refId: po.id,
+            partyName: po.supplierName || 'Supplier',
+            summary: `${po.itemName || 'PO Items'} ×${requestedRet} (${purchaseReturnSettlement})`,
+            estimatedAmount: estVal,
+            reason: returnReasonDraft || '',
+            payload: returnPayload
+          })
+        });
+        const reqData = await reqRes.json().catch(() => ({}));
+        if (!reqRes.ok) {
+          alert(reqData.error || 'Could not submit purchase return request.');
+          return;
+        }
+        if (Array.isArray(reqData.returnRequests)) setReturnRequests(reqData.returnRequests);
+        else if (reqData.request) setReturnRequests(prev => [reqData.request, ...(prev || [])]);
+        logAudit('return_request', 'purchase_return', `PO ${po.id} (${requestedRet} unit(s)) · Est ${shopProfile.currency} ${estVal} — awaiting Manager approval`);
+        setPurchaseReturnModalOpen(false);
+        setPurchaseReturnPO(null);
+        setReturnReasonDraft('');
+        alert('Purchase Return request submitted to Manager for approval.');
+      } catch (e) {
+        alert('Network error submitting purchase return request.');
+      }
+      return;
+    }
 
     try {
       const res = await apiFetch('/api/purchase-return', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          poId: po.id,
-          returnQty: requestedRet,
-          settlement: purchaseReturnSettlement,
-          paymentMethod: payMethod
-        })
+        body: JSON.stringify(returnPayload)
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -3070,13 +3357,14 @@ export default function App() {
       if (data.purchaseOrder) {
         let rh = data.purchaseOrder.returnHistory;
         try { rh = typeof rh === 'string' ? JSON.parse(rh || '[]') : (rh || []); } catch (_) {}
-        const merged = { ...data.purchaseOrder, returnHistory: rh };
+        let ph = data.purchaseOrder.paymentHistory;
+        try { ph = typeof ph === 'string' ? JSON.parse(ph || '[]') : (ph || []); } catch (_) {}
+        const merged = { ...data.purchaseOrder, returnHistory: Array.isArray(rh) ? rh : [], paymentHistory: Array.isArray(ph) ? ph : [] };
         persistPOs((purchaseOrders || []).map(p => p.id === po.id ? merged : p));
       }
       if (data.inventory) {
         setInventory(prev => prev.map(inv => inv.id === data.inventory.id ? { ...inv, ...data.inventory } : inv));
       }
-      // Credit payment method if cash refund (same rule: not an expense)
       const cashRefund = Number(data.cashRefund) || 0;
       const supplierCredit = Number(data.supplierCredit) || 0;
       const retQty = Number(data.retQty) || requestedRet;
@@ -3102,14 +3390,93 @@ export default function App() {
           return next;
         });
       }
+      logAudit('purchase_return', 'purchase_orders', `PO ${po.id} · ${retQty} unit(s) · ${shopProfile.currency} ${returnValue} (${purchaseReturnSettlement})`);
       setPurchaseReturnModalOpen(false);
       setPurchaseReturnPO(null);
       const invMsg = 'Inventory reduced (items had been received).';
       const payMsg = cashRefund > 0 ? ` ${shopProfile.currency} ${cashRefund.toLocaleString()} recorded as a supplier refund to ${payMethod}.` : (purchaseReturnSettlement === 'Supplier Credit Note' ? ` Supplier credit note recorded: ${shopProfile.currency} ${supplierCredit.toLocaleString()}.` : ' Unpaid supplier balance reduced.');
-      logAudit('purchase_return', 'purchase', po?.id || '');
       alert(`Purchase return processed: ${retQty} unit(s). Purchase amount reduced by ${shopProfile.currency} ${returnValue.toLocaleString()}.${payMsg} ${invMsg}`);
     } catch (e) {
       alert('Network error processing purchase return.');
+    }
+  };
+
+  const handleApproveReturnRequest = async (reqItem) => {
+    if (!reqItem || !reqItem.payload) return;
+    try {
+      if (reqItem.kind === 'sale') {
+        const res = await apiFetch('/api/sales-return', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(reqItem.payload)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { alert(data.error || 'Sales return execution failed.'); return; }
+        if (data.sale) {
+          let saleItems = data.sale.items;
+          try { saleItems = typeof saleItems === 'string' ? JSON.parse(saleItems || '[]') : (saleItems || []); } catch (_) {}
+          let ph = data.sale.paymentHistory;
+          try { if (typeof ph === 'string') ph = JSON.parse(ph || '[]'); } catch (_) { ph = []; }
+          const merged = { ...data.sale, items: saleItems, paymentHistory: Array.isArray(ph) ? ph : [], type: data.sale.saleType };
+          setSales(prev => prev.map(s => s.id === merged.id ? merged : s));
+        }
+        if (Array.isArray(data.inventory) && data.inventory.length) {
+          setInventory(prev => {
+            const byId = Object.fromEntries(data.inventory.map(r => [r.id, r]));
+            return prev.map(inv => byId[inv.id] ? { ...inv, ...byId[inv.id] } : inv);
+          });
+        }
+      } else {
+        const res = await apiFetch('/api/purchase-return', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(reqItem.payload)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { alert(data.error || 'Purchase return execution failed.'); return; }
+        if (data.purchaseOrder) {
+          let rh = data.purchaseOrder.returnHistory;
+          try { rh = typeof rh === 'string' ? JSON.parse(rh || '[]') : (rh || []); } catch (_) {}
+          let ph = data.purchaseOrder.paymentHistory;
+          try { ph = typeof ph === 'string' ? JSON.parse(ph || '[]') : (ph || []); } catch (_) {}
+          const merged = { ...data.purchaseOrder, returnHistory: Array.isArray(rh) ? rh : [], paymentHistory: Array.isArray(ph) ? ph : [] };
+          persistPOs((purchaseOrders || []).map(p => p.id === merged.id ? merged : p));
+        }
+        if (data.inventory) {
+          setInventory(prev => prev.map(inv => inv.id === data.inventory.id ? { ...inv, ...data.inventory } : inv));
+        }
+      }
+      const updRes = await apiFetch(`/api/return-requests/${reqItem.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'Approved' })
+      });
+      const updData = await updRes.json().catch(() => ({}));
+      if (Array.isArray(updData.returnRequests)) setReturnRequests(updData.returnRequests);
+      else setReturnRequests(prev => (prev || []).map(r => r.id === reqItem.id ? { ...r, status: 'Approved', decidedBy: currentUser?.name || 'Manager', decidedAt: new Date().toISOString() } : r));
+      logAudit('return_approved', `${reqItem.kind}_return`, `Approved ${reqItem.kind} return on ${reqItem.refId} (requested by ${reqItem.requestedBy || 'staff'})`);
+      alert(`${reqItem.kind === 'sale' ? 'Sales' : 'Purchase'} return approved and processed.`);
+    } catch (e) {
+      alert('Network error approving return request.');
+    }
+  };
+
+  const handleRejectReturnRequest = async (reqItem) => {
+    if (!reqItem) return;
+    const note = window.prompt('Optional rejection note for staff:', '') ?? null;
+    if (note === null) return;
+    try {
+      const updRes = await apiFetch(`/api/return-requests/${reqItem.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'Rejected', decisionNote: note })
+      });
+      const updData = await updRes.json().catch(() => ({}));
+      if (Array.isArray(updData.returnRequests)) setReturnRequests(updData.returnRequests);
+      else setReturnRequests(prev => (prev || []).map(r => r.id === reqItem.id ? { ...r, status: 'Rejected', decisionNote: note, decidedBy: currentUser?.name || 'Manager', decidedAt: new Date().toISOString() } : r));
+      logAudit('return_rejected', `${reqItem.kind}_return`, `Rejected ${reqItem.kind} return on ${reqItem.refId}${note ? ': ' + note : ''}`);
+    } catch (e) {
+      alert('Network error rejecting return request.');
     }
   };
 
@@ -3198,6 +3565,34 @@ export default function App() {
     return () => { window.removeEventListener('online', flush); clearTimeout(t); };
   }, [isLoggedIn]);
 
+  useEffect(() => {
+    if (!isLoggedIn || !tenantInfo?.isSuperAdmin) return;
+    (async () => {
+      try {
+        const [tr, pr, pf] = await Promise.all([
+          apiFetch('/api/super-tenants'),
+          apiFetch('/api/super-payments'),
+          apiFetch('/api/super-profile')
+        ]);
+        if (tr.ok) {
+          const td = await tr.json();
+          setSuperTenants(td.tenants || []);
+          setSuperPlans(td.plans || []);
+          setPlatformKpis(td.kpis || null);
+          if (Array.isArray(td.payments) && td.payments.length) setSuperPayments(td.payments);
+        }
+        if (pr.ok) {
+          const pd = await pr.json();
+          if (Array.isArray(pd.payments)) setSuperPayments(pd.payments);
+        }
+        if (pf.ok) {
+          const pfd = await pf.json();
+          setSuperProfile({ username: pfd.profile?.username || '', displayName: pfd.profile?.displayName || '' });
+        }
+      } catch (_) {}
+    })();
+  }, [isLoggedIn, tenantInfo?.isSuperAdmin]);
+
     const handleLogin = async (e) => {
     e.preventDefault();
     if (!loginUsername.trim()) {
@@ -3226,26 +3621,65 @@ export default function App() {
       setLoginPrivileges(privFromLogin);
       try { localStorage.setItem('erp_login_privileges', JSON.stringify(privFromLogin)); } catch (e) {}
       setCurrentUser(foundUser);
+      // Auto-assign branch for single-location users on login
+      try {
+        const isAdm = (foundUser.role || '').toLowerCase() === 'admin' || !!data.isSuperAdmin;
+        let uBranches = foundUser.allowedBranches;
+        try { if (typeof uBranches === 'string') uBranches = JSON.parse(uBranches || '[]'); } catch (_) { uBranches = []; }
+        let pBranches = privFromLogin && Array.isArray(privFromLogin.allowedBranches) ? privFromLogin.allowedBranches : null;
+        const assignedBrList = (Array.isArray(uBranches) && uBranches.length) ? uBranches : (foundUser.branchId ? [foundUser.branchId] : pBranches);
+        const userHasMulti = isAdm || (!assignedBrList && (data.branches || branches || []).length > 1) || (Array.isArray(assignedBrList) && assignedBrList.length > 1);
+        if (!userHasMulti) {
+          let singleBranchId = (Array.isArray(assignedBrList) && assignedBrList[0]) || '';
+          if (!singleBranchId) {
+            const bPool = data.branches || branches || [];
+            const defB = bPool.find(b => b.isDefault) || bPool[0];
+            singleBranchId = defB ? defB.id : '';
+          }
+          if (singleBranchId) {
+            setCurrentBranchId(singleBranchId);
+            try { localStorage.setItem('erp_current_branch', singleBranchId); } catch (_) {}
+          }
+        }
+      } catch (_) {}
       // Wipe cross-tenant caches first (before loading this shop's local keys)
       try {
         ['erp_inventory','erp_sales','erp_customers','erp_purchase_orders','erp_expenses','erp_suppliers','erp_users','erp_roles','erp_employees','erp_leave_requests','erp_payroll'].forEach(k => localStorage.removeItem(k));
         setInventory([]); setSales([]); setCustomers([]); setPurchaseOrders([]); setExpenses([]); setSuppliers([]);
         setCategories([]); setExpenseCategories([]); setItemStatuses([]);
+        setReturnRequests([]);
       } catch (e) {}
+
+      if (data.shopProfile) {
+        setShopProfile({
+          name: data.shopProfile.name || '',
+          tagline: data.shopProfile.tagline || '',
+          currency: data.shopProfile.currency || 'KSh',
+          phone: data.shopProfile.phone || '',
+          location: data.shopProfile.location || ''
+        });
+        try {
+          const tid = (data.tenant && data.tenant.id) || 'tenant-default';
+          localStorage.setItem('erp_shop_profile__' + tid, JSON.stringify(data.shopProfile));
+        } catch (_) {}
+      } else if (data.tenant) {
+        const tid = data.tenant.id || 'tenant-default';
+        let cached = null;
+        try { cached = JSON.parse(localStorage.getItem('erp_shop_profile__' + tid) || 'null'); } catch (_) {}
+        setShopProfile({
+          name: (cached && cached.name) || data.tenant.name || '',
+          tagline: (cached && cached.tagline) || '',
+          currency: (cached && cached.currency) || 'KSh',
+          phone: (cached && cached.phone) || '',
+          location: (cached && cached.location) || ''
+        });
+      }
 
       if (data.tenant) {
         setTenantInfo(data.tenant);
         if (data.tenant.maxUsers) setMaxUsers(data.tenant.maxUsers);
         if (data.tenant.maxBranches) setMaxBranches(data.tenant.maxBranches);
         try { localStorage.setItem('erp_tenant', JSON.stringify(data.tenant)); } catch (e) {}
-        // Seed profile with signup business name immediately (API may refine)
-        setShopProfile(prev => ({
-          name: data.tenant.name || prev.name || '',
-          tagline: prev.tagline || '',
-          currency: prev.currency || 'KSh',
-          phone: prev.phone || '',
-          location: prev.location || ''
-        }));
         try {
           const tid = data.tenant.id || 'unknown';
           const a = JSON.parse(localStorage.getItem('erp_audit_log__' + tid) || '[]');
@@ -3273,7 +3707,6 @@ export default function App() {
       setProfileImage(foundUser.photo || '');
       localStorage.setItem('erp_current_user', JSON.stringify(foundUser));
       localStorage.setItem('erp_login_time', Date.now().toString());
-      try { sessionStorage.removeItem('erp_session_expired_alert'); } catch (_) {}
       setLoginPin('');
 
       // Default landing tab: Sales ledger if allowed, else Inventory → Purchase → HR → dashboard
@@ -3291,33 +3724,9 @@ export default function App() {
       const isAdm = (foundUser.role || '').toLowerCase() === 'admin' || !!data.isSuperAdmin;
       const landing = pickLandingTab(privFromLogin, isAdm);
       setActiveTabPersist(landing);
-      if (landing === 'sales') {
-        try { setSalesLedgerSubTab('ledger'); } catch (_) {}
-      }
 
       setAppHydrating(true);
       setIsLoggedIn(true);
-      try { logAudit('login', 'auth', foundUser.name || foundUser.id || 'user'); } catch (_) {}
-      // Clear previous-business in-memory data so cash-ups/tasks/sales never bleed across tenants
-      setCashUpHistory([]);
-      try {
-        localStorage.removeItem('erp_cashups');
-        const tidClr = (() => { try { return JSON.parse(localStorage.getItem('erp_tenant') || 'null')?.id; } catch { return null; } })();
-        if (tidClr) localStorage.removeItem('erp_cashups__' + tidClr);
-        // remove any other tenant cashup keys left in this browser
-        Object.keys(localStorage).filter(k => k === 'erp_cashups' || k.startsWith('erp_cashups__')).forEach(k => localStorage.removeItem(k));
-      } catch (_) {}
-      setTasks([]);
-      setSales([]);
-      setExpenses([]);
-      setInventory([]);
-      setCustomers([]);
-      setPurchaseOrders([]);
-      setPayrollRecords([]);
-      setEmployees([]);
-      setLeaveRequests([]);
-      setStockMovements([]);
-      setSalesTargets({});
       const hydrateTimer = setTimeout(() => setAppHydrating(false), 2500);
 
       // Load shop data without blocking the UI
@@ -3327,9 +3736,19 @@ export default function App() {
           if (!r2.ok) { clearTimeout(hydrateTimer); setAppHydrating(false); return; }
           const payload = await r2.json();
           if (payload && Array.isArray(payload.inventory)) setInventory(payload.inventory);
-          if (payload && Array.isArray(payload.sales)) setSales(payload.sales.map(s => ({ ...s, items: typeof s.items === 'string' ? JSON.parse(s.items || '[]') : (s.items || []) })));
-          if (payload && Array.isArray(payload.customers)) setCustomers(payload.customers);
-          if (payload && Array.isArray(payload.purchaseOrders)) setPurchaseOrders(payload.purchaseOrders.map(p => ({ ...p, items: typeof p.items === 'string' ? (() => { try { return JSON.parse(p.items); } catch { return p.items; } })() : p.items })));
+          if (payload && Array.isArray(payload.sales)) setSales(payload.sales.map(s => {
+            let ph = s.paymentHistory;
+            try { if (typeof ph === 'string') ph = JSON.parse(ph || '[]'); } catch (_) { ph = []; }
+            return { ...s, items: typeof s.items === 'string' ? JSON.parse(s.items || '[]') : (s.items || []), paymentHistory: Array.isArray(ph) ? ph : [] };
+          }));
+          if (payload && Array.isArray(payload.customers)) setCustomers(payload.customers.map(c => ({ ...c, loyaltyPoints: parseFloat(c.loyaltyPoints) || 0, eligibility: typeof c.eligibility === 'string' ? JSON.parse(c.eligibility || '["Paid"]') : (c.eligibility || ['Paid']) })));
+          if (payload && Array.isArray(payload.purchaseOrders)) setPurchaseOrders(payload.purchaseOrders.map(p => {
+            let ph = p.paymentHistory;
+            try { if (typeof ph === 'string') ph = JSON.parse(ph || '[]'); } catch (_) { ph = []; }
+            let rh = p.returnHistory;
+            try { if (typeof rh === 'string') rh = JSON.parse(rh || '[]'); } catch (_) { rh = []; }
+            return { ...p, items: typeof p.items === 'string' ? (() => { try { return JSON.parse(p.items); } catch { return p.items; } })() : p.items, paymentHistory: Array.isArray(ph) ? ph : [], returnHistory: Array.isArray(rh) ? rh : [] };
+          }));
           if (payload && Array.isArray(payload.users)) setUsers(payload.users);
           if (payload && Array.isArray(payload.roles)) {
             const mappedRoles = payload.roles.map(r => ({ ...r, privileges: typeof r.privileges === 'string' ? JSON.parse(r.privileges) : r.privileges }));
@@ -3363,42 +3782,59 @@ export default function App() {
           if (payload && payload.tenantSettings) {
             try {
               const ts = payload.tenantSettings;
-              if (ts.paymentMethods != null) { try { const pm = typeof ts.paymentMethods === 'string' ? JSON.parse(ts.paymentMethods) : ts.paymentMethods; if (Array.isArray(pm) && pm.length) setPaymentMethods(pm); else if (!Array.isArray(pm)) setPaymentMethods([{ id: 'pm-cash', name: 'Cash', startingBalance: 0, currentBalance: 0 }, { id: 'pm-mpesa', name: 'M-Pesa', startingBalance: 0, currentBalance: 0 }]); } catch (_) {} }
+              if (ts.paymentMethods) { const pm = typeof ts.paymentMethods === 'string' ? JSON.parse(ts.paymentMethods) : ts.paymentMethods; if (Array.isArray(pm) && pm.length) setPaymentMethods(pm); }
               if (ts.salesTerms) { const st = typeof ts.salesTerms === 'string' ? JSON.parse(ts.salesTerms) : ts.salesTerms; if (Array.isArray(st) && st.length) setSalesTerms(st); }
               if (ts.loyalty) { const loy = typeof ts.loyalty === 'string' ? JSON.parse(ts.loyalty) : ts.loyalty; if (loy) setLoyaltySettings(loy); }
               if (ts.etims) { const et = typeof ts.etims === 'string' ? JSON.parse(ts.etims) : ts.etims; if (et) setEtimsSettings(et); }
               if (ts.salesTargets) { const tgt = typeof ts.salesTargets === 'string' ? JSON.parse(ts.salesTargets) : ts.salesTargets; if (tgt) setSalesTargets(tgt); }
-              if (ts.tasks != null) { try { const tk = typeof ts.tasks === 'string' ? JSON.parse(ts.tasks) : ts.tasks; setTasks(Array.isArray(tk) ? tk : []); } catch (_) { setTasks([]); } } else { setTasks([]); }
-              if (ts.cashups != null) { try {
-                const cu = typeof ts.cashups === 'string' ? JSON.parse(ts.cashups) : ts.cashups;
-                const tid = (() => { try { return String((tenantInfo && tenantInfo.id) || JSON.parse(localStorage.getItem('erp_tenant') || 'null')?.id || ''); } catch { return ''; } })();
-                const arr = Array.isArray(cu) ? cu : [];
-                // Strict tenant filter — drop legacy/other-business rows
-                const cleaned = tid ? arr.filter(x => x && String(x.tenantId || '') === tid) : [];
-                setCashUpHistory(cleaned);
-                // Persist cleanup if DB still held foreign cashups
-                if (cleaned.length !== arr.length) {
-                  apiFetch('/api/tenant-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cashups: cleaned }) }).catch(() => {});
-                }
-              } catch (_) { setCashUpHistory([]); } } else { setCashUpHistory([]); }
+              if (ts.tasks) { const tk = typeof ts.tasks === 'string' ? JSON.parse(ts.tasks) : ts.tasks; if (Array.isArray(tk)) setTasks(tk); }
+              if (ts.cashups) { const cu = typeof ts.cashups === 'string' ? JSON.parse(ts.cashups) : ts.cashups; if (Array.isArray(cu)) setCashUpHistory(cu); }
               if (ts.auditLog) { const al = typeof ts.auditLog === 'string' ? JSON.parse(ts.auditLog) : ts.auditLog; if (Array.isArray(al)) setAuditLog(al); }
               if (ts.itemVariances) {
                 const iv = typeof ts.itemVariances === 'string' ? JSON.parse(ts.itemVariances) : ts.itemVariances;
                 if (Array.isArray(iv) && iv.length) setItemVariances(iv);
-              if (ts.purchaseApprovalLimit != null) setPurchaseApprovalLimit(parseFloat(ts.purchaseApprovalLimit) || 0);
-              if (ts.pendingApprovals != null) {
-                try {
-                  const pa = typeof ts.pendingApprovals === 'string' ? JSON.parse(ts.pendingApprovals) : ts.pendingApprovals;
-                  setPendingApprovals(Array.isArray(pa) ? pa : []);
-                } catch (_) { setPendingApprovals([]); }
               }
-
+              if (ts.poApprovalLimit !== undefined && ts.poApprovalLimit !== null) {
+                const lim = Math.max(0, parseFloat(ts.poApprovalLimit) || 0);
+                setPoApprovalLimit(lim);
+                setPoApprovalLimitDraft(String(lim));
+              }
+              if (ts.returnRequests) {
+                const rr = typeof ts.returnRequests === 'string' ? JSON.parse(ts.returnRequests || '[]') : ts.returnRequests;
+                if (Array.isArray(rr)) setReturnRequests(rr);
               }
             } catch (e) {}
           }
-          if (payload && Array.isArray(payload.branches)) { setBranches(payload.branches); if (payload.maxBranches) setMaxBranches(payload.maxBranches); }
+          if (payload && Array.isArray(payload.branches)) {
+            setBranches(payload.branches);
+            if (payload.maxBranches) setMaxBranches(payload.maxBranches);
+            try {
+              const me = foundUser;
+              const isAdm = (me?.role || '').toLowerCase() === 'admin' || !!data.isSuperAdmin;
+              let uBranches = me?.allowedBranches;
+              try { if (typeof uBranches === 'string') uBranches = JSON.parse(uBranches || '[]'); } catch (_) { uBranches = []; }
+              let pBranches = privFromLogin && Array.isArray(privFromLogin.allowedBranches) ? privFromLogin.allowedBranches : null;
+              const assignedBrList = (Array.isArray(uBranches) && uBranches.length) ? uBranches : (me?.branchId ? [me.branchId] : pBranches);
+              const userHasMulti = isAdm || (!assignedBrList && payload.branches.length > 1) || (Array.isArray(assignedBrList) && assignedBrList.length > 1);
+              if (!userHasMulti) {
+                let singleBranchId = (Array.isArray(assignedBrList) && assignedBrList[0]) || '';
+                if (!singleBranchId && payload.branches.length) {
+                  const defB = payload.branches.find(b => b.isDefault) || payload.branches[0];
+                  singleBranchId = defB ? defB.id : '';
+                }
+                if (singleBranchId) {
+                  setCurrentBranchId(singleBranchId);
+                  try { localStorage.setItem('erp_current_branch', singleBranchId); } catch (_) {}
+                }
+              }
+            } catch (_) {}
+          }
           if (payload && Array.isArray(payload.suppliers)) setSuppliers(payload.suppliers);
-          if (payload && Array.isArray(payload.expenses)) setExpenses(payload.expenses);
+          if (payload && Array.isArray(payload.expenses)) setExpenses(payload.expenses.map(e => {
+            let ph = e.paymentHistory;
+            try { if (typeof ph === 'string') ph = JSON.parse(ph || '[]'); } catch (_) { ph = []; }
+            return { ...e, paymentHistory: Array.isArray(ph) ? ph : [] };
+          }));
           if (payload && Array.isArray(payload.employees)) setEmployees(payload.employees);
         } catch (e) {}
         finally { clearTimeout(hydrateTimer); setAppHydrating(false); }
@@ -3413,13 +3849,13 @@ export default function App() {
   if (!isLoggedIn) {
     const showPin = typeof window !== 'undefined' && window.__neo_show_pin;
     return (
-      <div className="min-h-screen bg-[#0b1220] text-slate-100 flex items-center justify-center p-4">
-        <div className="w-full max-w-[400px] bg-[#141c2b] border border-slate-800/80 rounded-2xl shadow-2xl p-8 space-y-6">
+      <div className="min-h-screen bg-[#0b1220] text-slate-100 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+        <div className="w-full max-w-[420px] bg-[#141c2b] border border-slate-800/80 rounded-2xl shadow-2xl p-5 sm:p-8 space-y-6 max-h-[92vh] overflow-y-auto my-auto">
           <div className="text-center space-y-3">
             <div className="mx-auto w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 flex items-center justify-center shadow-lg shadow-emerald-500/20">
               <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
             </div>
-            <h1 className="text-2xl font-bold tracking-tight text-white">NEO ERP</h1>
+            <h1 className="text-2xl font-bold tracking-tight text-white">A40 ERP</h1>
             <p className="text-sm text-slate-400">{authMode === 'super' ? 'Platform operator login' : authMode === 'signup' ? 'Register a new shop' : 'Sign in to your shop'}</p>
           </div>
 
@@ -3477,11 +3913,11 @@ export default function App() {
               <input required type="password" placeholder="Admin PIN (min 4)" value={signupForm.adminPin} onChange={e => setSignupForm({ ...signupForm, adminPin: e.target.value })} className="w-full bg-slate-950/80 border border-slate-700 rounded-xl py-2.5 px-3 text-sm text-white placeholder:text-slate-500" />
               <input required type="email" placeholder="Email (required)" value={signupForm.email} onChange={e => setSignupForm({ ...signupForm, email: e.target.value })} className="w-full bg-slate-950/80 border border-slate-700 rounded-xl py-2.5 px-3 text-sm text-white placeholder:text-slate-500" />
               <input required placeholder="Phone (required)" value={signupForm.phone} onChange={e => setSignupForm({ ...signupForm, phone: e.target.value })} className="w-full bg-slate-950/80 border border-slate-700 rounded-xl py-2.5 px-3 text-sm text-white placeholder:text-slate-500" />
-              <select value={signupForm.plan} onChange={e => setSignupForm({ ...signupForm, plan: e.target.value })} className="w-full bg-slate-950/80 border border-slate-700 rounded-xl py-2.5 px-3 text-sm text-white">
+              <SearchableSelect value={signupForm.plan} onChange={e => setSignupForm({ ...signupForm, plan: e.target.value })} className="w-full bg-slate-950/80 border border-slate-700 rounded-xl py-2.5 px-3 text-sm text-white">
                 <option value="starter">Starter (3 users)</option>
                 <option value="business">Business (15 users)</option>
                 <option value="premium">Premium (100 users)</option>
-              </select>
+              </SearchableSelect>
               <p className="text-[10px] text-slate-500">Your shop will be reviewed by the platform operator before it is activated.</p>
               <button type="submit" className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-white font-bold rounded-xl text-sm">Create Shop & Continue</button>
             </form>
@@ -3564,18 +4000,15 @@ export default function App() {
       ownOnly: p.ownOnly === true
     };
   };
-  const TAB_KEYS = ['dashboard','pos','sales','inventory','expenses','laybys','customers','suppliers','reports','reportComprehensive','reportSales','reportPurchase','reportExpense','reportHr','reportCustomer','reportInventory','reportAging','reportFinancial','reportLedger','reportSalesMostItems','reportSalesMostCategories','reportSalesDormant','reportSalesBestPeople','reportSalesKpis','reportSalesPeople','reportSalesCreditsLayby','reportSalesTax','reportSalesByLocation','reportPurchaseSummary','reportPurchaseByCategory','reportPurchaseCogs','reportPurchaseUnpaid','reportPurchaseTax','reportExpenseHighCategories','reportExpenseFrequent','reportExpenseUnpaid','reportExpenseTax','reportHrSummary','reportHrLeaveSalary','reportCustomerStatement','reportInventoryValuation','reportInventoryDeadStock','reportInventoryLowStock','reportInventoryBalance','reportInventoryBranch','reportAgingSummary','reportFinancialPnl','reportFinancialBalance','reportFinancialCashflow','reportFinancialComparative','reportFinancialTax','reportLedgerTrial','reportLedgerJournals','reportLedgerReconcile','settings','purchase','employees','payroll','hr'];
+  const TAB_KEYS = ['dashboard','pos','sales','inventory','expenses','laybys','customers','suppliers','reports','reportComprehensive','reportSales','reportPurchase','reportExpense','reportHr','reportCustomer','reportSalesMostItems','reportSalesMostCategories','reportSalesDormant','reportSalesBestPeople','reportSalesKpis','reportSalesPeople','reportSalesCreditsLayby','reportSalesTax','reportPurchaseSummary','reportPurchaseByCategory','reportPurchaseCogs','reportPurchaseUnpaid','reportPurchaseTax','reportExpenseHighCategories','reportExpenseFrequent','reportExpenseUnpaid','reportExpenseTax','reportHrSummary','reportHrLeaveSalary','reportCustomerStatement','reportInventory','reportAging','reportFinancial','reportLedger','settings','purchase','employees','payroll','hr'];
   const REPORT_SECTION_PARENT = {
     reportComprehensive: 'reports',
-    reportSalesMostItems: 'reportSales', reportSalesMostCategories: 'reportSales', reportSalesDormant: 'reportSales', reportSalesBestPeople: 'reportSales', reportSalesKpis: 'reportSales', reportSalesPeople: 'reportSales', reportSalesCreditsLayby: 'reportSales', reportSalesTax: 'reportSales', reportSalesByLocation: 'reportSales',
+    reportSalesMostItems: 'reportSales', reportSalesMostCategories: 'reportSales', reportSalesDormant: 'reportSales', reportSalesBestPeople: 'reportSales', reportSalesKpis: 'reportSales', reportSalesPeople: 'reportSales', reportSalesCreditsLayby: 'reportSales', reportSalesTax: 'reportSales',
     reportPurchaseSummary: 'reportPurchase', reportPurchaseByCategory: 'reportPurchase', reportPurchaseCogs: 'reportPurchase', reportPurchaseUnpaid: 'reportPurchase', reportPurchaseTax: 'reportPurchase',
     reportExpenseHighCategories: 'reportExpense', reportExpenseFrequent: 'reportExpense', reportExpenseUnpaid: 'reportExpense', reportExpenseTax: 'reportExpense',
     reportHrSummary: 'reportHr', reportHrLeaveSalary: 'reportHr',
     reportCustomerStatement: 'reportCustomer',
-    reportInventoryValuation: 'reportInventory', reportInventoryDeadStock: 'reportInventory', reportInventoryLowStock: 'reportInventory', reportInventoryBalance: 'reportInventory', reportInventoryBranch: 'reportInventory',
-    reportAgingSummary: 'reportAging',
-    reportFinancialPnl: 'reportFinancial', reportFinancialBalance: 'reportFinancial', reportFinancialCashflow: 'reportFinancial', reportFinancialComparative: 'reportFinancial', reportFinancialTax: 'reportFinancial',
-    reportLedgerTrial: 'reportLedger', reportLedgerJournals: 'reportLedger', reportLedgerReconcile: 'reportLedger'
+    reportInventory: 'reports', reportAging: 'reports', reportFinancial: 'reports', reportLedger: 'reports'
   };
   const privileges = {};
   TAB_KEYS.forEach(k => {
@@ -3637,7 +4070,20 @@ export default function App() {
 
   // Location privileges: list of branch IDs the role may use (empty = all locations)
   const allowedBranchIds = earlyAllowedBranchIds;
-  const accessibleBranches = (branches || []).filter(b => !allowedBranchIds || allowedBranchIds.includes(String(b.id)));
+  const accessibleBranches = (() => {
+    const list = (branches || []).filter(b => !allowedBranchIds || allowedBranchIds.includes(String(b.id)));
+    if (isRestrictedToSingleLocation && list.length > 1) {
+      if (allowedBranchIds && allowedBranchIds.length) {
+        const found = list.find(b => allowedBranchIds.includes(String(b.id)));
+        if (found) return [found];
+      }
+      const def = list.find(b => b.isDefault) || list[0];
+      return def ? [def] : [];
+    }
+    return list;
+  })();
+  const canSeeTransfer = hasMultiLocationAccess && (branches || []).length > 1;
+  const canSeeStockMovements = hasMultiLocationAccess || canUpdate('purchase') || isAdminUser;
   const canAccessBranch = (bid) => {
     if (!allowedBranchIds) return true;
     if (!bid) {
@@ -3648,29 +4094,12 @@ export default function App() {
   };
   const logAudit = (action, entity, detail) => {
     const entry = { id: `aud-${Date.now()}-${Math.random().toString(36).slice(2,7)}`, at: new Date().toISOString(), user: currentUser?.name || 'System', action, entity, detail: String(detail || ''), tenantId: (tenantInfo && tenantInfo.id) || '' };
-    setAuditLog(prev => {
-      const next = [entry, ...(Array.isArray(prev) ? prev : [])].slice(0, 500);
-      apiFetch('/api/tenant-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ auditLog: next }) }).catch(() => {});
-      return next;
-    });
-  };
-  const submitPendingApproval = (type, summary, amount, payload) => {
-    const entry = {
-      id: 'appr-' + Date.now(),
-      type,
-      summary: summary || '',
-      amount: amount != null ? Number(amount) : null,
-      payload: payload || null,
-      status: 'pending',
-      requestedBy: currentUser?.name || currentUser?.id || '',
-      requestedAt: new Date().toISOString(),
-      tenantId: (tenantInfo && tenantInfo.id) || ''
-    };
-    const next = [entry, ...asArr(pendingApprovals)].slice(0, 200);
-    setPendingApprovals(next);
-    saveTenantSettingsPartial({ pendingApprovals: next });
-    logAudit('request_approval', type, summary || entry.id);
-    return entry;
+    setAuditLog(prev => [entry, ...(Array.isArray(prev) ? prev : [])].slice(0, 600));
+    apiFetch('/api/audit-append', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, entity, detail: String(detail || '') })
+    }).catch(() => {});
   };
   const logStock = (itemId, itemName, qtyChange, reason, refId, branchId) => {
     const bid = branchId || activeBranchId || currentBranchId || '';
@@ -3721,6 +4150,27 @@ export default function App() {
       reader.readAsDataURL(file);
     } catch (e) { reject(e); }
   });
+
+  /** Compress uploaded inventory item image to lightweight JPEG (~12-25KB) so D1/SQLite stays fast. */
+  const compressItemImage = (file, maxEdge = 420, quality = 0.62) => compressProfileImage(file, maxEdge, quality);
+
+  const downloadUpdateZip = async () => {
+    try {
+      const res = await fetch('/api/download-update-zip');
+      if (!res.ok) { alert('Failed to build update ZIP.'); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `neo-erp-cloudflare-update-${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+    } catch (e) {
+      alert('Download failed: ' + (e?.message || 'Network error'));
+    }
+  };
   const downloadPayslipHtml = (pr) => {
     if (!pr) return;
     const emp = employees.find(e => e.id === pr.employeeId);
@@ -3740,7 +4190,7 @@ export default function App() {
     const aLines = parseLines(ab, allowanceNames);
     const dLines = parseLines(db, deductionNames);
     const cur = shopProfile.currency || 'KSh';
-    const shop = shopProfile.name || tenantInfo?.name || 'NEO ERP';
+    const shop = shopProfile.name || tenantInfo?.name || 'A40 ERP';
     const tagline = shopProfile.tagline || '';
     const location = shopProfile.location || '';
     const empName = pr.employeeName || emp?.name || '';
@@ -3894,6 +4344,16 @@ export default function App() {
     const due = parseFloat(s.balanceDue) || Math.max(0, (parseFloat(s.totalAmount) || 0) - (parseFloat(s.paidAmount) || 0));
     return due > 0;
   }));
+
+  // Management Approvals Data
+  const pendingLeavesList = (visibleLeave || []).filter(lr => (lr.status || '').toLowerCase() === 'pending');
+  const pendingPurchasesList = (visiblePOs || []).filter(po => {
+    const st = (po.workflowStatus || po.status || '').toLowerCase();
+    return st === 'draft' || st === 'pending';
+  });
+  const pendingReturnsList = (returnRequests || []).filter(rr => (rr.status || '').toLowerCase() === 'pending');
+  const totalPendingApprovals = pendingLeavesList.length + pendingPurchasesList.length + pendingReturnsList.length;
+
   const hrAllowedSubTabs = (() => {
     const allowed = [];
     if (isAdminUser || privileges.employees?.view) allowed.push('employees');
@@ -3920,154 +4380,490 @@ export default function App() {
   }
 
   if (tenantInfo?.isSuperAdmin) {
+    const refreshPlatformAll = async () => {
+      const [tr, pr, pf] = await Promise.all([
+        apiFetch('/api/super-tenants'),
+        apiFetch('/api/super-payments'),
+        apiFetch('/api/super-profile')
+      ]);
+      if (tr.ok) {
+        const d = await tr.json();
+        setSuperTenants(d.tenants || []);
+        setSuperPlans(d.plans || []);
+        setPlatformKpis(d.kpis || null);
+        if (Array.isArray(d.payments) && d.payments.length) setSuperPayments(d.payments);
+      }
+      if (pr.ok) {
+        const pd = await pr.json();
+        setSuperPayments(pd.payments || []);
+      }
+      if (pf.ok) {
+        const pfd = await pf.json();
+        setSuperProfile({ username: pfd.profile?.username || '', displayName: pfd.profile?.displayName || '' });
+      }
+    };
+
+    const subscribedList = (superTenants || [])
+      .filter(t => t.isSubscribed || (Number(t.totalSpend) || 0) > 0 || (t.status === 'active' && (Number(t.planPriceMonthly) || 0) > 0))
+      .sort((a, b) => (Number(b.totalSpend) || 0) - (Number(a.totalSpend) || 0));
+    const longStandingList = [...(superTenants || [])]
+      .sort((a, b) => (Number(b.daysOnPlatform) || 0) - (Number(a.daysOnPlatform) || 0));
+    const dueSoonOrOverdueList = (superTenants || [])
+      .filter(t => t.dueSoon || t.overdue || (t.daysUntilDue !== null && t.daysUntilDue !== undefined && t.daysUntilDue <= 10))
+      .sort((a, b) => (Number(a.daysUntilDue ?? 999)) - (Number(b.daysUntilDue ?? 999)));
+    const inactiveList = (superTenants || [])
+      .filter(t => t.isInactive || (Number(t.daysInactive) || 0) >= 14)
+      .sort((a, b) => (Number(b.daysInactive) || 0) - (Number(a.daysInactive) || 0));
+    const filteredDirectory = (superTenants || []).filter(t => {
+      const q = (superSearch || '').trim().toLowerCase();
+      if (q && !String(t.name || '').toLowerCase().includes(q) && !String(t.id || '').toLowerCase().includes(q) && !String(t.ownerEmail || '').toLowerCase().includes(q)) return false;
+      if (superFilter === 'subscribed') return !!(t.isSubscribed || (Number(t.totalSpend) || 0) > 0);
+      if (superFilter === 'duesoon') return !!(t.dueSoon || t.overdue);
+      if (superFilter === 'inactive') return !!t.isInactive;
+      if (superFilter === 'longstanding') return !!t.isLongStanding;
+      if (superFilter === 'suspended') return t.status === 'suspended';
+      return true;
+    });
+
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100">
-        <header className="border-b border-slate-800 bg-slate-900 px-4 py-3 flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h1 className="text-lg font-bold text-amber-400">Platform console</h1>
-            <p className="text-[10px] text-slate-500">Super-admin · no shop POS · manage tenants, plans, payments, access</p>
+      <div className="min-h-screen bg-[#080e1a] text-slate-100">
+        <header className="border-b border-indigo-500/20 bg-gradient-to-r from-[#0d1629] via-[#131c36] to-[#0f1f2e] px-5 py-3.5 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 text-slate-950 font-black flex items-center justify-center text-sm shadow-lg shadow-amber-500/20">A</div>
+            <div>
+              <h1 className="text-base sm:text-lg font-extrabold tracking-tight text-white">A40 Platform Command Console</h1>
+              <p className="text-[11px] text-indigo-200/70">Subscriber revenue analytics, billing renewals, tenant tenure & shop lifecycle control</p>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-400">{currentUser?.name || superProfile.displayName || 'Platform'}</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={downloadUpdateZip} className="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-400 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition-colors">
+              <Download className="w-3.5 h-3.5" /> Download Update ZIP
+            </button>
+            <button type="button" onClick={refreshPlatformAll} className="px-3 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-bold rounded-lg transition-colors">
+              Refresh Data
+            </button>
+            <span className="text-xs text-slate-300 px-2.5 py-1 rounded-lg bg-slate-900/80 border border-slate-700/80 font-medium">{currentUser?.name || superProfile.displayName || 'Platform'}</span>
             <button type="button" onClick={() => {
               setIsLoggedIn(false); setCurrentUser(null); setAuthToken(''); setTenantInfo(null); setLoginPrivileges(null);
               try { localStorage.removeItem('erp_auth_token'); localStorage.removeItem('erp_current_user'); localStorage.removeItem('erp_tenant'); localStorage.removeItem('erp_login_privileges'); } catch (e) {}
-            }} className="px-3 py-1.5 bg-slate-800 text-white text-xs font-bold rounded">Log out</button>
+            }} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-lg border border-slate-700">Log out</button>
           </div>
         </header>
-        <div className="max-w-6xl mx-auto p-4 space-y-4">
-          <div className="flex flex-wrap gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800">
-            {[{ id: 'tenants', label: 'Shops' }, { id: 'plans', label: 'Plans' }, { id: 'payments', label: 'Payments' }, { id: 'profile', label: 'My profile' }].map(t => (
+
+        <div className="max-w-7xl mx-auto p-4 sm:p-6 space-y-5">
+          {platformKpis && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+              {[
+                { label: 'Total Shops', v: platformKpis.totalShops ?? 0, sub: `${platformKpis.activeShops ?? 0} active · ${platformKpis.trialShops ?? 0} trial`, tone: 'from-sky-500/15 to-slate-900 border-sky-500/30 text-sky-300' },
+                { label: 'Subscribed', v: platformKpis.subscribedCount ?? subscribedList.length, sub: `MRR ~KSh ${Number(platformKpis.estimatedMrr || 0).toLocaleString()}`, tone: 'from-emerald-500/15 to-slate-900 border-emerald-500/30 text-emerald-300' },
+                { label: 'Spend (Month)', v: `KSh ${Number(platformKpis.paymentsThisMonth || 0).toLocaleString()}`, sub: `${platformKpis.paymentsThisMonthCount || 0} payment(s)`, tone: 'from-teal-500/15 to-slate-900 border-teal-500/30 text-teal-300' },
+                { label: 'All-Time Spend', v: `KSh ${Number(platformKpis.totalRevenueAllTime || 0).toLocaleString()}`, sub: `${platformKpis.totalPaymentsCount || 0} total txns`, tone: 'from-indigo-500/15 to-slate-900 border-indigo-500/30 text-indigo-300' },
+                { label: 'Long-Standing', v: platformKpis.longStandingCount ?? 0, sub: '30+ days on platform', tone: 'from-violet-500/15 to-slate-900 border-violet-500/30 text-violet-300' },
+                { label: 'Due Soon (≤7d)', v: platformKpis.dueSoonCount ?? 0, sub: 'Renewal approaching', tone: 'from-amber-500/15 to-slate-900 border-amber-500/30 text-amber-300' },
+                { label: 'Overdue', v: platformKpis.overdueCount ?? 0, sub: 'Action needed', tone: 'from-rose-500/15 to-slate-900 border-rose-500/30 text-rose-300' },
+                { label: 'Inactive (14d+)', v: platformKpis.inactiveCount ?? 0, sub: `${platformKpis.suspendedShops || 0} suspended`, tone: 'from-orange-500/15 to-slate-900 border-orange-500/30 text-orange-300' }
+              ].map(k => (
+                <div key={k.label} className={`bg-gradient-to-br ${k.tone} border rounded-xl p-3.5 flex flex-col justify-between`}>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-300/80">{k.label}</p>
+                  <p className="text-lg font-extrabold text-white tabular-nums mt-1">{k.v}</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5 truncate">{k.sub}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-1.5 bg-[#0f172a] p-1.5 rounded-xl border border-slate-800">
+            {[
+              { id: 'reports', label: 'Reports & Insights' },
+              { id: 'tenants', label: `Shops (${(superTenants || []).length})` },
+              { id: 'plans', label: 'Subscription Plans' },
+              { id: 'payments', label: `Payments (${(superPayments || []).length})` },
+              { id: 'profile', label: 'My Profile' }
+            ].map(t => (
               <button key={t.id} type="button" onClick={async () => {
                 setSuperTab(t.id);
                 if (t.id === 'plans') {
                   const r = await apiFetch('/api/super-plans');
                   if (r.ok) { const d = await r.json(); setSuperPlans(d.plans || []); }
                 }
-                if (t.id === 'tenants') {
+                if (t.id === 'tenants' || t.id === 'reports') {
                   const r = await apiFetch('/api/super-tenants');
-                  if (r.ok) { const d = await r.json(); setSuperTenants(d.tenants || []); setSuperPlans(d.plans || []); setPlatformKpis(d.kpis || null); }
+                  if (r.ok) { const d = await r.json(); setSuperTenants(d.tenants || []); setSuperPlans(d.plans || []); setPlatformKpis(d.kpis || null); if (Array.isArray(d.payments)) setSuperPayments(d.payments); }
                 }
                 if (t.id === 'payments') {
                   const r = await apiFetch('/api/super-payments');
                   if (r.ok) { const d = await r.json(); setSuperPayments(d.payments || []); }
                 }
-              }} className={`px-3 py-2 rounded-lg text-xs font-bold ${superTab === t.id ? 'bg-amber-500 text-slate-950' : 'text-slate-400'}`}>{t.label}</button>
+              }} className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-colors ${superTab === t.id ? 'bg-gradient-to-r from-amber-400 to-orange-400 text-slate-950 shadow' : 'text-slate-300 hover:bg-slate-800/80 hover:text-white'}`}>{t.label}</button>
             ))}
-            <button type="button" onClick={async () => {
-              const res = await apiFetch('/api/super-tenants');
-              if (res.ok) { const d = await res.json(); setSuperTenants(d.tenants || []); setSuperPlans(d.plans || []); setPlatformKpis(d.kpis || null); }
-              const pr = await apiFetch('/api/super-payments'); if (pr.ok) { const pd = await pr.json(); setSuperPayments(pd.payments || []); }
-              const pf = await apiFetch('/api/super-profile'); if (pf.ok) { const pfd = await pf.json(); setSuperProfile({ username: pfd.profile?.username || '', displayName: pfd.profile?.displayName || '' }); }
-            }} className="ml-auto px-3 py-2 text-xs text-emerald-400 font-bold">Refresh</button>
           </div>
-          {platformKpis && (
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-                {[
-                  { label: 'Shops', v: platformKpis.totalShops },
-                  { label: 'Active', v: platformKpis.activeShops, c: 'text-emerald-400' },
-                  { label: 'Trial', v: platformKpis.trialShops, c: 'text-sky-400' },
-                  { label: 'Suspended', v: platformKpis.suspendedShops, c: 'text-red-400' },
-                  { label: 'Payments (mo)', v: platformKpis.paymentsThisMonthCount },
-                  { label: 'Revenue (mo)', v: platformKpis.paymentsThisMonth, money: true }
-                ].map(k => (
-                  <div key={k.label} className="bg-slate-900 border border-slate-700 rounded-xl p-3 text-center">
-                    <p className="text-[10px] text-slate-500 uppercase">{k.label}</p>
-                    <p className={`text-lg font-bold ${k.c || 'text-white'}`}>{k.money && typeof k.v === 'number' ? Number(k.v).toLocaleString() : k.v}</p>
+
+          {superTab === 'reports' && (
+            <div className="space-y-5">
+              {/* Breakdown Bar: Revenue by Plan & Payment Method + Export */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="bg-[#0f172a] border border-indigo-500/25 rounded-xl p-4 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-300">Spendings by Subscription Plan</h3>
+                    <span className="text-[10px] text-slate-400 tabular-nums">All-time</span>
                   </div>
-                ))}
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-                {[
-                  { label: 'Pending', v: platformKpis.pendingShops || 0, c: 'text-amber-400' },
-                  { label: 'Due soon (14d)', v: platformKpis.dueSoon || 0, c: 'text-amber-400' },
-                  { label: 'Inactive 60d+', v: platformKpis.inactiveShops || 0, c: 'text-rose-400' },
-                  { label: 'Long tenure 180d+', v: platformKpis.longTenureShops || 0, c: 'text-emerald-400' },
-                  { label: 'Payments (all)', v: platformKpis.paymentsAllTimeCount || 0 },
-                  { label: 'Revenue (all)', v: platformKpis.paymentsAllTime || 0, money: true, c: 'text-emerald-400' }
-                ].map(k => (
-                  <div key={k.label} className="bg-slate-900/80 border border-slate-700 rounded-xl p-3 text-center">
-                    <p className="text-[10px] text-slate-500 uppercase">{k.label}</p>
-                    <p className={`text-lg font-bold ${k.c || 'text-white'}`}>{k.money && typeof k.v === 'number' ? Number(k.v).toLocaleString() : k.v}</p>
-                  </div>
-                ))}
-              </div>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-                <div className="bg-slate-900 border border-amber-500/30 rounded-xl p-3">
-                  <h4 className="text-xs font-bold text-amber-400 mb-2">Due soon / trial ending</h4>
-                  <div className="max-h-40 overflow-y-auto text-[11px] space-y-1">
-                    {(superTenants || []).filter(t => t.isDueSoon).length === 0
-                      ? <p className="text-slate-500">None in next 14 days.</p>
-                      : (superTenants || []).filter(t => t.isDueSoon).map(t => (
-                        <div key={t.id} className="flex justify-between gap-2 border-b border-slate-800 pb-1">
-                          <span className="text-white truncate">{t.name}</span>
-                          <span className="text-amber-400 shrink-0">{t.daysToTrialEnd != null ? (t.daysToTrialEnd + 'd') : '—'}</span>
+                  <div className="space-y-2">
+                    {Object.entries(platformKpis?.revenueByPlan || {}).length === 0 ? (
+                      <p className="text-xs text-slate-500 py-2">No plan revenue recorded yet.</p>
+                    ) : Object.entries(platformKpis?.revenueByPlan || {}).map(([planKey, info]) => (
+                      <div key={planKey} className="flex items-center justify-between bg-slate-950/70 border border-slate-800 rounded-lg px-3 py-2 text-xs">
+                        <div>
+                          <span className="font-bold text-white capitalize">{planKey}</span>
+                          <span className="text-[10px] text-slate-400 ml-2">{info.shops || 0} shop(s)</span>
                         </div>
-                      ))}
-                  </div>
-                </div>
-                <div className="bg-slate-900 border border-rose-500/30 rounded-xl p-3">
-                  <h4 className="text-xs font-bold text-rose-400 mb-2">Inactive / suspended</h4>
-                  <div className="max-h-40 overflow-y-auto text-[11px] space-y-1">
-                    {(superTenants || []).filter(t => t.isInactive).length === 0
-                      ? <p className="text-slate-500">No long-inactive shops.</p>
-                      : (superTenants || []).filter(t => t.isInactive).slice(0, 20).map(t => (
-                        <div key={t.id} className="flex justify-between gap-2 border-b border-slate-800 pb-1">
-                          <span className="text-white truncate">{t.name}</span>
-                          <span className="text-rose-400 shrink-0">{t.status}{t.inactiveDays != null ? (' · ' + t.inactiveDays + 'd') : ''}</span>
+                        <div className="text-right tabular-nums">
+                          <span className="font-bold text-emerald-400 block">KSh {Number(info.totalSpend || 0).toLocaleString()}</span>
+                          <span className="text-[10px] text-sky-300">This mo: KSh {Number(info.monthSpend || 0).toLocaleString()}</span>
                         </div>
-                      ))}
-                  </div>
-                </div>
-                <div className="bg-slate-900 border border-emerald-500/30 rounded-xl p-3">
-                  <h4 className="text-xs font-bold text-emerald-400 mb-2">Top spenders (last payment)</h4>
-                  <div className="max-h-40 overflow-y-auto text-[11px] space-y-1">
-                    {[...(superTenants || [])].filter(t => t.lastPayment?.amount).sort((a, b) => (Number(b.lastPayment?.amount)||0) - (Number(a.lastPayment?.amount)||0)).slice(0, 12).map(t => (
-                      <div key={t.id} className="flex justify-between gap-2 border-b border-slate-800 pb-1">
-                        <span className="text-white truncate">{t.name}</span>
-                        <span className="text-emerald-400 shrink-0">{Number(t.lastPayment.amount).toLocaleString()}</span>
                       </div>
                     ))}
-                    {(superTenants || []).filter(t => t.lastPayment?.amount).length === 0 && <p className="text-slate-500">No payment records yet.</p>}
+                  </div>
+                </div>
+
+                <div className="bg-[#0f172a] border border-emerald-500/25 rounded-xl p-4 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-300">Collections by Payment Channel</h3>
+                    <span className="text-[10px] text-slate-400 tabular-nums">{(superPayments || []).length} txns</span>
+                  </div>
+                  <div className="space-y-2">
+                    {Object.entries(platformKpis?.revenueByMethod || {}).length === 0 ? (
+                      <p className="text-xs text-slate-500 py-2">No subscription payments logged yet.</p>
+                    ) : Object.entries(platformKpis?.revenueByMethod || {}).map(([methodKey, amt]) => (
+                      <div key={methodKey} className="flex items-center justify-between bg-slate-950/70 border border-slate-800 rounded-lg px-3 py-2 text-xs">
+                        <span className="font-semibold text-white">{methodKey}</span>
+                        <span className="font-bold text-emerald-400 tabular-nums">KSh {Number(amt || 0).toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-[#0f172a] border border-amber-500/25 rounded-xl p-4 flex flex-col justify-between space-y-3">
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-amber-300">Platform Executive Exports</h3>
+                    <p className="text-[11px] text-slate-400 mt-1">Download full subscriber spendings, tenure, renewal due dates, and dormancy diagnostics.</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button type="button" onClick={() => exportCSV(`platform_subscribers_${new Date().toISOString().slice(0, 10)}.csv`, (superTenants || []).map(t => ({
+                      shopId: t.id,
+                      shopName: t.name,
+                      plan: t.planLabel || t.plan,
+                      status: t.status,
+                      monthlyRate: t.planPriceMonthly || 0,
+                      spendThisMonth: t.spendThisMonth || 0,
+                      totalSpendAllTime: t.totalSpend || 0,
+                      paymentCount: t.paymentCount || 0,
+                      daysOnPlatform: t.daysOnPlatform || 0,
+                      daysUntilDue: t.daysUntilDue ?? '',
+                      overdue: t.overdue ? 'YES' : 'NO',
+                      daysInactive: t.daysInactive ?? 0,
+                      erpSalesCount: t.salesCount || 0,
+                      erpSalesVolume: t.salesVolume || 0
+                    })))} className="py-2 px-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg text-xs">
+                      Export CSV Report
+                    </button>
+                    <button type="button" onClick={() => exportRowsAsPdf('Platform Subscribers & Spendings Report', (superTenants || []).map(t => ({
+                      shop: t.name,
+                      plan: t.planLabel || t.plan,
+                      status: t.status,
+                      monthSpend: t.spendThisMonth || 0,
+                      totalSpend: t.totalSpend || 0,
+                      tenureDays: t.daysOnPlatform || 0,
+                      dueDays: t.daysUntilDue ?? '—',
+                      inactiveDays: t.daysInactive ?? 0
+                    })))} className="py-2 px-3 bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold rounded-lg text-xs">
+                      Export PDF Report
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 1. Subscribed Businesses & Spendings */}
+              <div className="bg-[#0f172a] border border-emerald-500/30 rounded-xl overflow-hidden">
+                <div className="px-4 py-3 bg-gradient-to-r from-emerald-500/15 to-transparent border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-bold text-white">Subscribed Businesses & Spendings</h3>
+                    <p className="text-[11px] text-slate-400">Detailed breakdown of businesses on paid plans, monthly spend, cumulative lifetime spend, and payment frequency.</p>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-md bg-emerald-500/20 text-emerald-300 text-xs font-bold tabular-nums">{subscribedList.length} business(es)</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs text-left min-w-[920px]">
+                    <thead className="bg-slate-950 text-slate-400 uppercase text-[10px]">
+                      <tr>
+                        <th className="p-3">Business</th>
+                        <th className="p-3">Plan & Rate</th>
+                        <th className="p-3 text-right">Spend (This Mo)</th>
+                        <th className="p-3 text-right">Total Spend (All-Time)</th>
+                        <th className="p-3 text-center">Payments</th>
+                        <th className="p-3 text-right">Avg Payment</th>
+                        <th className="p-3">Last Payment</th>
+                        <th className="p-3 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/80">
+                      {subscribedList.length === 0 ? (
+                        <tr><td colSpan={8} className="p-6 text-center text-slate-500">No subscribed businesses or recorded subscription payments yet.</td></tr>
+                      ) : subscribedList.map(t => (
+                        <tr key={t.id} className="hover:bg-slate-800/40">
+                          <td className="p-3">
+                            <p className="font-bold text-white">{t.name}</p>
+                            <p className="text-[10px] text-slate-400">{t.ownerEmail || t.id}</p>
+                          </td>
+                          <td className="p-3">
+                            <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-bold text-[10px] uppercase">{t.planLabel || t.plan}</span>
+                            <span className="block text-[10px] text-slate-400 mt-0.5 tabular-nums">KSh {Number(t.planPriceMonthly || 0).toLocaleString()}/mo</span>
+                          </td>
+                          <td className="p-3 text-right font-bold text-sky-300 tabular-nums">KSh {Number(t.spendThisMonth || 0).toLocaleString()}</td>
+                          <td className="p-3 text-right font-extrabold text-emerald-400 tabular-nums">KSh {Number(t.totalSpend || 0).toLocaleString()}</td>
+                          <td className="p-3 text-center font-mono text-slate-200">{t.paymentCount || 0}</td>
+                          <td className="p-3 text-right text-slate-300 tabular-nums">KSh {Number(t.avgPayment || 0).toLocaleString()}</td>
+                          <td className="p-3 text-slate-300">
+                            {t.lastPayment ? (
+                              <div>
+                                <span className="font-semibold text-white tabular-nums">KSh {Number(t.lastPayment.amount || 0).toLocaleString()}</span>
+                                <span className="text-[10px] text-slate-400 block">{t.lastPayment.method || 'M-Pesa'} · {t.lastPayment.at ? new Date(t.lastPayment.at).toLocaleDateString() : (t.lastPayment.period || '')}</span>
+                              </div>
+                            ) : '—'}
+                          </td>
+                          <td className="p-3 text-right">
+                            <button type="button" onClick={() => {
+                              setPaymentForm({ tenantId: t.id, amount: String(t.planPriceMonthly || ''), method: 'M-Pesa', reference: '', period: new Date().toISOString().slice(0, 7), notes: '' });
+                              setSuperTab('payments');
+                            }} className="px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-bold rounded text-[10px]">
+                              + Log Payment
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* 2. Coming Due Soon & Overdue Renewals */}
+              <div className="bg-[#0f172a] border border-amber-500/30 rounded-xl overflow-hidden">
+                <div className="px-4 py-3 bg-gradient-to-r from-amber-500/15 to-transparent border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-bold text-white">Coming Due Soon & Overdue Renewals</h3>
+                    <p className="text-[11px] text-slate-400">Businesses whose trial or 30-day billing cycle expires within 10 days, or are already past due.</p>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-md bg-amber-500/20 text-amber-300 text-xs font-bold tabular-nums">{dueSoonOrOverdueList.length} alert(s)</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs text-left min-w-[860px]">
+                    <thead className="bg-slate-950 text-slate-400 uppercase text-[10px]">
+                      <tr>
+                        <th className="p-3">Business</th>
+                        <th className="p-3">Plan & Status</th>
+                        <th className="p-3">Due / Expiry Date</th>
+                        <th className="p-3">Urgency</th>
+                        <th className="p-3 text-right">Total Spend</th>
+                        <th className="p-3 text-right">Quick Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/80">
+                      {dueSoonOrOverdueList.length === 0 ? (
+                        <tr><td colSpan={6} className="p-6 text-center text-slate-500">All active shops are current on billing — none coming due soon or overdue.</td></tr>
+                      ) : dueSoonOrOverdueList.map(t => (
+                        <tr key={t.id} className="hover:bg-slate-800/40">
+                          <td className="p-3">
+                            <p className="font-bold text-white">{t.name}</p>
+                            <p className="text-[10px] text-slate-400">{t.ownerEmail || t.id}</p>
+                          </td>
+                          <td className="p-3">
+                            <span className="font-semibold text-white capitalize">{t.planLabel || t.plan}</span>
+                            <span className="text-[10px] text-slate-400 block capitalize">Status: {t.status}</span>
+                          </td>
+                          <td className="p-3 text-slate-200 tabular-nums">
+                            {t.nextDueAt ? new Date(t.nextDueAt).toLocaleDateString() : (t.trialEndsAt ? new Date(t.trialEndsAt).toLocaleDateString() : 'No payment yet')}
+                          </td>
+                          <td className="p-3">
+                            {t.overdue ? (
+                              <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold text-[10px]">
+                                Overdue {t.daysUntilDue != null && t.daysUntilDue < 0 ? `(${Math.abs(t.daysUntilDue)}d past)` : ''}
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold text-[10px]">
+                                Due in {t.daysUntilDue ?? 0} day(s)
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-3 text-right font-bold text-emerald-400 tabular-nums">KSh {Number(t.totalSpend || 0).toLocaleString()}</td>
+                          <td className="p-3 text-right space-x-1.5">
+                            <button type="button" onClick={() => {
+                              setPaymentForm({ tenantId: t.id, amount: String(t.planPriceMonthly || ''), method: 'M-Pesa', reference: '', period: new Date().toISOString().slice(0, 7), notes: '' });
+                              setSuperTab('payments');
+                            }} className="px-2.5 py-1 bg-amber-500 text-slate-950 font-bold rounded text-[10px]">Record Renewal</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* 3. Long-Standing Businesses & 4. Inactive / Dormant Businesses side-by-side or stacked */}
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+                <div className="bg-[#0f172a] border border-violet-500/30 rounded-xl overflow-hidden">
+                  <div className="px-4 py-3 bg-gradient-to-r from-violet-500/15 to-transparent border-b border-slate-800 flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-bold text-white">Tenure & Long-Standing Businesses</h3>
+                      <p className="text-[11px] text-slate-400">Ranked by days on platform, ERP usage volume, and loyalty.</p>
+                    </div>
+                    <span className="px-2 py-0.5 rounded bg-violet-500/20 text-violet-300 text-[11px] font-bold">Top Tenure</span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs text-left min-w-[540px]">
+                      <thead className="bg-slate-950 text-slate-400 uppercase text-[10px]">
+                        <tr>
+                          <th className="p-2.5">Business</th>
+                          <th className="p-2.5">Joined</th>
+                          <th className="p-2.5 text-right">Tenure</th>
+                          <th className="p-2.5 text-right">ERP Sales</th>
+                          <th className="p-2.5 text-right">Platform Spend</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/80">
+                        {longStandingList.slice(0, 15).map(t => (
+                          <tr key={t.id} className="hover:bg-slate-800/40">
+                            <td className="p-2.5">
+                              <p className="font-bold text-white">{t.name}</p>
+                              <p className="text-[10px] text-slate-400">{t.userCount || 0} users · {t.branchCount || 1} branch(es)</p>
+                            </td>
+                            <td className="p-2.5 text-slate-300 tabular-nums">{t.createdAt ? new Date(t.createdAt).toLocaleDateString() : '—'}</td>
+                            <td className="p-2.5 text-right font-bold text-violet-300 tabular-nums">{t.daysOnPlatform ?? 0}d</td>
+                            <td className="p-2.5 text-right text-slate-300 tabular-nums">
+                              {Number(t.salesCount || 0).toLocaleString()}
+                              <span className="block text-[10px] text-slate-500">KSh {Number(t.salesVolume || 0).toLocaleString()}</span>
+                            </td>
+                            <td className="p-2.5 text-right font-bold text-emerald-400 tabular-nums">KSh {Number(t.totalSpend || 0).toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="bg-[#0f172a] border border-orange-500/30 rounded-xl overflow-hidden">
+                  <div className="px-4 py-3 bg-gradient-to-r from-orange-500/15 to-transparent border-b border-slate-800 flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-bold text-white">Inactive / Dormant Businesses (14+ Days)</h3>
+                      <p className="text-[11px] text-slate-400">Shops with no recent logins, sales, POs, or expenses recorded.</p>
+                    </div>
+                    <span className="px-2 py-0.5 rounded bg-orange-500/20 text-orange-300 text-[11px] font-bold tabular-nums">{inactiveList.length} dormant</span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs text-left min-w-[540px]">
+                      <thead className="bg-slate-950 text-slate-400 uppercase text-[10px]">
+                        <tr>
+                          <th className="p-2.5">Business</th>
+                          <th className="p-2.5">Last Activity</th>
+                          <th className="p-2.5 text-right">Idle Days</th>
+                          <th className="p-2.5">Status</th>
+                          <th className="p-2.5 text-right">Follow-Up</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/80">
+                        {inactiveList.length === 0 ? (
+                          <tr><td colSpan={5} className="p-6 text-center text-slate-500">Great engagement — zero businesses have been inactive for 14+ days.</td></tr>
+                        ) : inactiveList.map(t => (
+                          <tr key={t.id} className="hover:bg-slate-800/40">
+                            <td className="p-2.5">
+                              <p className="font-bold text-white">{t.name}</p>
+                              <p className="text-[10px] text-slate-400">{t.ownerEmail || t.id}</p>
+                            </td>
+                            <td className="p-2.5 text-slate-300 tabular-nums">{t.lastActivityAt ? new Date(t.lastActivityAt).toLocaleDateString() : 'Never'}</td>
+                            <td className="p-2.5 text-right font-bold text-orange-300 tabular-nums">{t.daysInactive ?? '—'}d</td>
+                            <td className="p-2.5">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${t.status === 'suspended' ? 'bg-rose-500/20 text-rose-300' : 'bg-slate-800 text-slate-300'}`}>{t.status}</span>
+                            </td>
+                            <td className="p-2.5 text-right">
+                              <button type="button" onClick={() => setSelectedPlatformShop({ ...t })} className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 font-bold rounded text-[10px]">Inspect</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               </div>
             </div>
           )}
+
           {superTab === 'tenants' && (
             <div className="space-y-4">
-              <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs">
-                <input placeholder="Shop name" value={newTenantForm.name} onChange={e => setNewTenantForm({ ...newTenantForm, name: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white" />
-                <select value={newTenantForm.plan} onChange={e => setNewTenantForm({ ...newTenantForm, plan: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white">
+              <div className="bg-[#0f172a] border border-slate-700 rounded-xl p-4 grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs">
+                <input placeholder="Shop name" value={newTenantForm.name} onChange={e => setNewTenantForm({ ...newTenantForm, name: e.target.value })} className="bg-slate-950 border border-slate-700 rounded-lg p-2 text-white" />
+                <SearchableSelect value={newTenantForm.plan} onChange={e => setNewTenantForm({ ...newTenantForm, plan: e.target.value })} className="bg-slate-950 border border-slate-700 rounded-lg p-2 text-white">
                   {(superPlans.length ? superPlans : [{ id: 'starter', label: 'Starter' }, { id: 'business', label: 'Business' }, { id: 'premium', label: 'Premium' }]).map(p => <option key={p.id} value={p.id}>{p.label || p.id}</option>)}
-                </select>
-                <input placeholder="Owner email" value={newTenantForm.ownerEmail} onChange={e => setNewTenantForm({ ...newTenantForm, ownerEmail: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white" />
+                </SearchableSelect>
+                <input placeholder="Owner email" value={newTenantForm.ownerEmail} onChange={e => setNewTenantForm({ ...newTenantForm, ownerEmail: e.target.value })} className="bg-slate-950 border border-slate-700 rounded-lg p-2 text-white" />
                 <button type="button" onClick={async () => {
                   if (!newTenantForm.name.trim()) return alert('Shop name required');
                   const res = await apiFetch('/api/super-tenants', { method: 'POST', body: JSON.stringify({ ...newTenantForm, trialDays: 14 }) });
                   if (!res.ok) { const d = await res.json().catch(() => ({})); return alert(d.error || 'Failed'); }
                   setNewTenantForm({ name: '', plan: 'starter', ownerEmail: '' });
                   const r2 = await apiFetch('/api/super-tenants'); if (r2.ok) { const x = await r2.json(); setSuperTenants(x.tenants || []); setSuperPlans(x.plans || []); setPlatformKpis(x.kpis || null); }
-                }} className="bg-emerald-500 text-slate-950 font-bold rounded">Create shop (14d trial)</button>
+                }} className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg p-2">Create shop (14d trial)</button>
               </div>
-              <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-x-auto">
-                <table className="w-full text-xs text-left min-w-[900px]">
-                  <thead className="text-slate-400 uppercase text-[10px] bg-slate-950"><tr><th className="p-2">Shop</th><th className="p-2">Plan</th><th className="p-2">Access</th><th className="p-2">Users</th><th className="p-2">Sales</th><th className="p-2">Last pay</th><th className="p-2">Trial</th><th className="p-2">Actions</th></tr></thead>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <input placeholder="Search shop name, ID, or owner email…" value={superSearch} onChange={e => setSuperSearch(e.target.value)} className="bg-[#0f172a] border border-slate-700 rounded-lg px-3 py-2 text-xs text-white flex-1 min-w-[220px]" />
+                {[
+                  { id: 'all', label: 'All' },
+                  { id: 'subscribed', label: 'Subscribed' },
+                  { id: 'duesoon', label: 'Due Soon / Overdue' },
+                  { id: 'longstanding', label: 'Long-Standing' },
+                  { id: 'inactive', label: 'Inactive' },
+                  { id: 'suspended', label: 'Suspended' }
+                ].map(f => (
+                  <button key={f.id} type="button" onClick={() => setSuperFilter(f.id)} className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${superFilter === f.id ? 'bg-indigo-500 text-white border-indigo-400' : 'bg-[#0f172a] text-slate-300 border-slate-700 hover:bg-slate-800'}`}>{f.label}</button>
+                ))}
+              </div>
+
+              <div className="bg-[#0f172a] rounded-xl border border-slate-700 overflow-x-auto">
+                <table className="w-full text-xs text-left min-w-[1040px]">
+                  <thead className="text-slate-400 uppercase text-[10px] bg-slate-950">
+                    <tr>
+                      <th className="p-2.5">Shop</th>
+                      <th className="p-2.5">Plan</th>
+                      <th className="p-2.5">Access</th>
+                      <th className="p-2.5">Users</th>
+                      <th className="p-2.5 text-right">Total Spend</th>
+                      <th className="p-2.5">Tenure / Activity</th>
+                      <th className="p-2.5">Billing / Due</th>
+                      <th className="p-2.5">Actions</th>
+                    </tr>
+                  </thead>
                   <tbody className="divide-y divide-slate-800">
-                    {(superTenants || []).map(t => (
-                      <tr key={t.id} className={`cursor-pointer hover:bg-slate-800/60 ${t.overdue ? 'bg-red-500/5' : ''}`} onClick={() => setSelectedPlatformShop({ ...t })}>
-                        <td className="p-2"><input className="bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-white w-36" defaultValue={t.name} onBlur={async e => { if (e.target.value !== t.name) { await apiFetch('/api/super-tenants/' + t.id, { method: 'PUT', body: JSON.stringify({ name: e.target.value }) }); setSuperTenants(superTenants.map(x => x.id === t.id ? { ...x, name: e.target.value } : x)); } }} /><div className="text-[9px] text-slate-500 font-mono">{t.id}</div>
-                          {t.overdue && <span className="text-[9px] text-red-400 font-bold">Overdue / unpaid</span>}
+                    {filteredDirectory.map(t => (
+                      <tr key={t.id} className={`cursor-pointer hover:bg-slate-800/60 ${t.overdue ? 'bg-rose-500/5' : ''}`} onClick={() => setSelectedPlatformShop({ ...t })}>
+                        <td className="p-2.5" onClick={e => e.stopPropagation()}>
+                          <input className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white w-40 font-semibold" defaultValue={t.name} onBlur={async e => { if (e.target.value !== t.name) { await apiFetch('/api/super-tenants/' + t.id, { method: 'PUT', body: JSON.stringify({ name: e.target.value }) }); setSuperTenants(superTenants.map(x => x.id === t.id ? { ...x, name: e.target.value } : x)); } }} />
+                          <div className="text-[10px] text-slate-500 font-mono mt-0.5" onClick={() => setSelectedPlatformShop({ ...t })}>{t.id}{t.ownerEmail ? ` · ${t.ownerEmail}` : ''}</div>
                         </td>
-                        <td className="p-2" onClick={e => e.stopPropagation()}><select value={t.plan || 'starter'} onChange={async e => { await apiFetch('/api/super-tenants/' + t.id, { method: 'PUT', body: JSON.stringify({ plan: e.target.value }) }); setSuperTenants(superTenants.map(x => x.id === t.id ? { ...x, plan: e.target.value } : x)); }} className="bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-white">{(superPlans.length ? superPlans : [{ id: 'starter' }, { id: 'business' }, { id: 'premium' }]).map(p => <option key={p.id} value={p.id}>{p.label || p.id}</option>)}</select></td>
-                        <td className="p-2" onClick={e => e.stopPropagation()}><select value={t.status || 'active'} onChange={async e => { await apiFetch('/api/super-tenants/' + t.id, { method: 'PUT', body: JSON.stringify({ status: e.target.value }) }); setSuperTenants(superTenants.map(x => x.id === t.id ? { ...x, status: e.target.value } : x)); }} className={`bg-slate-950 border border-slate-700 rounded px-1 py-0.5 font-bold ${t.status === 'suspended' || t.status === 'deleted' ? 'text-red-400' : t.status === 'pending' ? 'text-amber-400' : t.status === 'trial' ? 'text-sky-400' : 'text-emerald-400'}`}><option value="active">active</option><option value="trial">trial</option><option value="pending">pending</option><option value="suspended">suspended</option><option value="deleted">deleted</option></select></td>
-                        <td className="p-2 text-white">{t.userCount ?? '—'}<span className="text-slate-500">/{t.maxUsers ?? '—'}</span></td>
-                        <td className="p-2 text-slate-300">{t.salesCount ?? '—'}</td>
-                        <td className="p-2 text-slate-400">{t.lastPayment ? `${t.lastPayment.amount} · ${t.lastPayment.period || ''}` : (t.lastPaymentAt ? new Date(t.lastPaymentAt).toLocaleDateString() : '—')}</td>
-                        <td className="p-2 text-slate-400">{t.trialEndsAt ? new Date(t.trialEndsAt).toLocaleDateString() : '—'}{t.trialExpired ? <span className="text-red-400 block text-[9px]">expired</span> : null}</td>
-                        <td className="p-2 space-y-1" onClick={e => e.stopPropagation()}>
-                          <button type="button" className="block w-full px-2 py-1 bg-sky-500/20 text-sky-400 rounded text-[10px] font-bold" onClick={async () => {
+                        <td className="p-2.5" onClick={e => e.stopPropagation()}><SearchableSelect value={t.plan || 'starter'} onChange={async e => { await apiFetch('/api/super-tenants/' + t.id, { method: 'PUT', body: JSON.stringify({ plan: e.target.value }) }); refreshPlatformAll(); }} className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white">{(superPlans.length ? superPlans : [{ id: 'starter' }, { id: 'business' }, { id: 'premium' }]).map(p => <option key={p.id} value={p.id}>{p.label || p.id}</option>)}</SearchableSelect></td>
+                        <td className="p-2.5" onClick={e => e.stopPropagation()}><SearchableSelect value={t.status || 'active'} onChange={async e => { await apiFetch('/api/super-tenants/' + t.id, { method: 'PUT', body: JSON.stringify({ status: e.target.value }) }); setSuperTenants(superTenants.map(x => x.id === t.id ? { ...x, status: e.target.value } : x)); }} className={`bg-slate-950 border border-slate-700 rounded px-2 py-1 font-bold ${t.status === 'suspended' || t.status === 'deleted' ? 'text-rose-400' : t.status === 'pending' ? 'text-amber-400' : t.status === 'trial' ? 'text-sky-400' : 'text-emerald-400'}`}><option value="active">active</option><option value="trial">trial</option><option value="pending">pending</option><option value="suspended">suspended</option><option value="deleted">deleted</option></SearchableSelect></td>
+                        <td className="p-2.5 text-white tabular-nums">{t.userCount ?? '—'}<span className="text-slate-500">/{t.maxUsers ?? '—'}</span><span className="block text-[10px] text-slate-400">{t.salesCount ?? 0} sales</span></td>
+                        <td className="p-2.5 text-right tabular-nums">
+                          <span className="font-bold text-emerald-400 block">KSh {Number(t.totalSpend || 0).toLocaleString()}</span>
+                          <span className="text-[10px] text-slate-400">{t.paymentCount || 0} pay(s)</span>
+                        </td>
+                        <td className="p-2.5 tabular-nums">
+                          <span className="text-slate-200 font-semibold">{t.daysOnPlatform ?? 0}d on platform</span>
+                          <span className={`block text-[10px] ${t.isInactive ? 'text-orange-400 font-bold' : 'text-slate-400'}`}>{t.isInactive ? `Idle ${t.daysInactive}d` : `Active (${t.daysInactive ?? 0}d ago)`}</span>
+                        </td>
+                        <td className="p-2.5 text-slate-300 tabular-nums">
+                          {t.overdue ? <span className="text-rose-400 font-bold block">Overdue</span> : t.dueSoon ? <span className="text-amber-400 font-bold block">Due in {t.daysUntilDue}d</span> : null}
+                          <span className="text-[10px] text-slate-400">{t.nextDueAt ? `Next: ${new Date(t.nextDueAt).toLocaleDateString()}` : (t.trialEndsAt ? `Trial: ${new Date(t.trialEndsAt).toLocaleDateString()}` : '—')}</span>
+                        </td>
+                        <td className="p-2.5 space-y-1" onClick={e => e.stopPropagation()}>
+                          <button type="button" className="block w-full px-2 py-1 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 rounded text-[10px] font-bold" onClick={async () => {
                             if (!confirm('Open this shop as support (2h session)?')) return;
                             const res = await apiFetch('/api/super-impersonate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tenantId: t.id }) });
                             const d = await res.json().catch(() => ({}));
@@ -4083,7 +4879,7 @@ export default function App() {
                           {t.status === 'suspended' ? (
                             <button type="button" className="block w-full px-2 py-1 bg-emerald-500/20 text-emerald-400 rounded text-[10px] font-bold" onClick={async () => { await apiFetch('/api/super-tenants/' + t.id, { method: 'PUT', body: JSON.stringify({ status: 'active' }) }); setSuperTenants(superTenants.map(x => x.id === t.id ? { ...x, status: 'active' } : x)); }}>Activate</button>
                           ) : (
-                            <button type="button" className="block w-full px-2 py-1 bg-red-500/20 text-red-400 rounded text-[10px] font-bold" onClick={async () => { if (!confirm('Suspend this shop? Users cannot log in.')) return; await apiFetch('/api/super-tenants/' + t.id, { method: 'PUT', body: JSON.stringify({ status: 'suspended' }) }); setSuperTenants(superTenants.map(x => x.id === t.id ? { ...x, status: 'suspended' } : x)); }}>Suspend</button>
+                            <button type="button" className="block w-full px-2 py-1 bg-rose-500/20 text-rose-300 rounded text-[10px] font-bold" onClick={async () => { if (!confirm('Suspend this shop? Users cannot log in.')) return; await apiFetch('/api/super-tenants/' + t.id, { method: 'PUT', body: JSON.stringify({ status: 'suspended' }) }); setSuperTenants(superTenants.map(x => x.id === t.id ? { ...x, status: 'suspended' } : x)); }}>Suspend</button>
                           )}
                           {t.id !== 'tenant-default' && (
                             <button type="button" className="block w-full px-2 py-1 bg-red-600/30 text-red-300 rounded text-[10px] font-bold" onClick={async () => {
@@ -4100,15 +4896,15 @@ export default function App() {
                         </td>
                       </tr>
                     ))}
-                    {/* legacy notes column removed from header — keep soft-delete below if present */}
-                    {(superTenants || []).length === 0 && (
-                      <tr><td colSpan={8} className="p-6 text-center text-slate-500">No shops yet</td></tr>
+                    {filteredDirectory.length === 0 && (
+                      <tr><td colSpan={8} className="p-6 text-center text-slate-500">No matching shops found.</td></tr>
                     )}
                   </tbody>
                 </table>
               </div>
             </div>
           )}
+
           {superTab === 'plans' && (
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -4117,48 +4913,48 @@ export default function App() {
                   const r = await apiFetch('/api/super-plans');
                   if (r.ok) { const d = await r.json(); setSuperPlans(d.plans || []); }
                   else alert('Could not load plans — check you are still logged in as Platform.');
-                }} className="px-3 py-1.5 bg-slate-800 text-emerald-400 text-xs font-bold rounded">Reload plans</button>
+                }} className="px-3 py-1.5 bg-slate-800 text-emerald-400 text-xs font-bold rounded-lg">Reload plans</button>
               </div>
-              <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-x-auto">
+              <div className="bg-[#0f172a] rounded-xl border border-slate-700 overflow-x-auto">
                 <table className="w-full text-xs min-w-[720px]">
                   <thead className="text-slate-400 text-[10px] uppercase bg-slate-950">
                     <tr>
-                      <th className="p-2 text-left">Id</th>
-                      <th className="p-2 text-left">Label</th>
-                      <th className="p-2 text-center">Max users</th>
-                      <th className="p-2 text-center">Branches</th>
-                      <th className="p-2 text-center">Price / mo</th>
-                      <th className="p-2 text-center">Active</th>
-                      <th className="p-2 text-center">Actions</th>
+                      <th className="p-2.5 text-left">Id</th>
+                      <th className="p-2.5 text-left">Label</th>
+                      <th className="p-2.5 text-center">Max users</th>
+                      <th className="p-2.5 text-center">Branches</th>
+                      <th className="p-2.5 text-center">Price / mo</th>
+                      <th className="p-2.5 text-center">Active</th>
+                      <th className="p-2.5 text-center">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
                     {(superPlans || []).length === 0 && (
-                      <tr><td colSpan={7} className="p-6 text-center text-slate-500">No plans yet. Click Reload plans or add one below. Default starter/business/premium will seed on first load.</td></tr>
+                      <tr><td colSpan={7} className="p-6 text-center text-slate-500">No plans yet. Click Reload plans or add one below.</td></tr>
                     )}
                     {(superPlans || []).map(p => (
                       <tr key={p.id}>
-                        <td className="p-2 font-mono text-slate-500 text-[10px]">{p.id}</td>
-                        <td className="p-2">
+                        <td className="p-2.5 font-mono text-slate-400 text-[11px]">{p.id}</td>
+                        <td className="p-2.5">
                           <input className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white" defaultValue={p.label || ''} id={`plan-label-${p.id}`} />
                         </td>
-                        <td className="p-2 text-center">
+                        <td className="p-2.5 text-center">
                           <input type="number" className="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center" defaultValue={p.maxUsers ?? 5} id={`plan-users-${p.id}`} />
                         </td>
-                        <td className="p-2 text-center">
+                        <td className="p-2.5 text-center">
                           <input type="number" className="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center" defaultValue={p.maxBranches ?? 1} id={`plan-branches-${p.id}`} />
                         </td>
-                        <td className="p-2 text-center">
+                        <td className="p-2.5 text-center">
                           <input type="number" className="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-center" defaultValue={p.priceMonthly ?? 0} id={`plan-price-${p.id}`} />
                         </td>
-                        <td className="p-2 text-center">
-                          <select className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white" defaultValue={p.active ? '1' : '0'} id={`plan-active-${p.id}`}>
+                        <td className="p-2.5 text-center">
+                          <SearchableSelect className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white" defaultValue={p.active ? '1' : '0'} id={`plan-active-${p.id}`}>
                             <option value="1">Yes</option>
                             <option value="0">No</option>
-                          </select>
+                          </SearchableSelect>
                         </td>
-                        <td className="p-2 text-center space-x-1">
-                          <button type="button" className="px-2 py-1 bg-emerald-500/20 text-emerald-400 font-bold rounded" onClick={async () => {
+                        <td className="p-2.5 text-center space-x-1">
+                          <button type="button" className="px-2.5 py-1 bg-emerald-500/20 text-emerald-400 font-bold rounded" onClick={async () => {
                             const label = document.getElementById(`plan-label-${p.id}`)?.value;
                             const maxUsers = parseInt(document.getElementById(`plan-users-${p.id}`)?.value, 10);
                             const maxBranches = parseInt(document.getElementById(`plan-branches-${p.id}`)?.value, 10);
@@ -4172,7 +4968,7 @@ export default function App() {
                             setSuperPlans(superPlans.map(x => x.id === p.id ? { ...x, label, maxUsers, maxBranches, priceMonthly, active: active ? 1 : 0 } : x));
                             alert('Plan saved');
                           }}>Save</button>
-                          <button type="button" className="px-2 py-1 bg-red-500/20 text-red-400 font-bold rounded" onClick={async () => {
+                          <button type="button" className="px-2.5 py-1 bg-red-500/20 text-red-400 font-bold rounded" onClick={async () => {
                             if (!window.confirm('Delete plan ' + p.id + '?')) return;
                             const res = await apiFetch('/api/super-plans/' + encodeURIComponent(p.id), { method: 'DELETE' });
                             if (!res.ok) return alert('Delete failed');
@@ -4184,7 +4980,7 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-              <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 space-y-2">
+              <div className="bg-[#0f172a] border border-slate-700 rounded-xl p-4 space-y-2">
                 <p className="text-[10px] font-bold text-slate-400 uppercase">Add new plan</p>
                 <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 text-xs">
                   <input placeholder="Plan id e.g. pro" value={planForm.id} onChange={e => setPlanForm({ ...planForm, id: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white" />
@@ -4203,36 +4999,46 @@ export default function App() {
               </div>
             </div>
           )}
+
           {superTab === 'payments' && (
             <div className="space-y-4">
-              <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
-                <select value={paymentForm.tenantId} onChange={e => setPaymentForm({ ...paymentForm, tenantId: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white"><option value="">— Shop —</option>{(superTenants || []).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
-                <input type="number" placeholder="Amount" value={paymentForm.amount} onChange={e => setPaymentForm({ ...paymentForm, amount: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white" />
-                <input placeholder="Method" value={paymentForm.method} onChange={e => setPaymentForm({ ...paymentForm, method: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white" />
-                <input placeholder="Reference" value={paymentForm.reference} onChange={e => setPaymentForm({ ...paymentForm, reference: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white" />
-                <input placeholder="Period e.g. 2026-10" value={paymentForm.period} onChange={e => setPaymentForm({ ...paymentForm, period: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white" />
+              <div className="bg-[#0f172a] border border-slate-700 rounded-xl p-4 grid grid-cols-2 sm:grid-cols-6 gap-2 text-xs">
+                <SearchableSelect value={paymentForm.tenantId} onChange={e => setPaymentForm({ ...paymentForm, tenantId: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white"><option value="">— Shop —</option>{(superTenants || []).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</SearchableSelect>
+                <input type="number" placeholder="Amount (KSh)" value={paymentForm.amount} onChange={e => setPaymentForm({ ...paymentForm, amount: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white" />
+                <input placeholder="Method (M-Pesa / Bank)" value={paymentForm.method} onChange={e => setPaymentForm({ ...paymentForm, method: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white" />
+                <input placeholder="TXN Reference" value={paymentForm.reference} onChange={e => setPaymentForm({ ...paymentForm, reference: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white" />
+                <input placeholder="Period e.g. 2026-11" value={paymentForm.period} onChange={e => setPaymentForm({ ...paymentForm, period: e.target.value })} className="bg-slate-950 border border-slate-700 rounded p-2 text-white" />
                 <button type="button" onClick={async () => {
                   if (!paymentForm.tenantId || !paymentForm.amount) return alert('Shop and amount required');
                   await apiFetch('/api/super-payments', { method: 'POST', body: JSON.stringify(paymentForm) });
                   setPaymentForm({ tenantId: '', amount: '', method: 'M-Pesa', reference: '', period: '', notes: '' });
-                  const r = await apiFetch('/api/super-payments'); if (r.ok) { const d = await r.json(); setSuperPayments(d.payments || []); }
-                }} className="bg-emerald-500 text-slate-950 font-bold rounded">Log payment</button>
+                  await refreshPlatformAll();
+                }} className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded p-2">Log payment</button>
               </div>
-              <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-x-auto">
-                <table className="w-full text-xs"><thead className="text-slate-400 text-[10px] uppercase bg-slate-950"><tr><th className="p-2 text-left">When</th><th className="p-2 text-left">Shop</th><th className="p-2">Amount</th><th className="p-2">Method</th><th className="p-2">Ref</th><th className="p-2">Period</th></tr></thead>
-                <tbody className="divide-y divide-slate-800">{(superPayments || []).map(p => (
-                  <tr key={p.id} className="cursor-pointer hover:bg-slate-800/60" onClick={() => setSelectedPlatformPayment({ ...p })}>
-                    <td className="p-2 text-slate-400">{p.at ? new Date(p.at).toLocaleString() : ''}</td>
-                    <td className="p-2 text-white">{p.tenantName || p.tenantId}</td>
-                    <td className="p-2 text-center text-emerald-400 font-bold">{p.amount}</td>
-                    <td className="p-2 text-center">{p.method}</td>
-                    <td className="p-2 font-mono text-[10px]">{p.reference}</td>
-                    <td className="p-2 text-center">{p.period}</td>
-                  </tr>
-                ))}</tbody></table>
+              <div className="bg-[#0f172a] rounded-xl border border-slate-700 overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-slate-400 text-[10px] uppercase bg-slate-950">
+                    <tr><th className="p-2.5 text-left">When</th><th className="p-2.5 text-left">Shop</th><th className="p-2.5 text-right">Amount</th><th className="p-2.5 text-center">Method</th><th className="p-2.5">Ref</th><th className="p-2.5 text-center">Period</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {(superPayments || []).length === 0 && (
+                      <tr><td colSpan={6} className="p-6 text-center text-slate-500">No subscription payments logged yet.</td></tr>
+                    )}
+                    {(superPayments || []).map(p => (
+                      <tr key={p.id} className="cursor-pointer hover:bg-slate-800/60" onClick={() => setSelectedPlatformPayment({ ...p })}>
+                        <td className="p-2.5 text-slate-400 tabular-nums">{p.at ? new Date(p.at).toLocaleString() : ''}</td>
+                        <td className="p-2.5 text-white font-semibold">{p.tenantName || p.tenantId}</td>
+                        <td className="p-2.5 text-right text-emerald-400 font-bold tabular-nums">KSh {Number(p.amount || 0).toLocaleString()}</td>
+                        <td className="p-2.5 text-center">{p.method}</td>
+                        <td className="p-2.5 font-mono text-[10px] text-sky-300">{p.reference}</td>
+                        <td className="p-2.5 text-center">{p.period}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
                 {selectedPlatformPayment && (
-                  <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-[80] p-4" onClick={() => setSelectedPlatformPayment(null)}>
-                    <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-3 shadow-2xl" onClick={e => e.stopPropagation()}>
+                  <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-[80] p-3 sm:p-4 overflow-y-auto" onClick={() => setSelectedPlatformPayment(null)}>
+                    <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-3 shadow-2xl max-h-[90vh] overflow-y-auto my-auto" onClick={e => e.stopPropagation()}>
                       <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                         <h4 className="font-bold text-white text-sm">Edit payment</h4>
                         <button type="button" onClick={() => setSelectedPlatformPayment(null)} className="text-slate-400">✕</button>
@@ -4240,10 +5046,10 @@ export default function App() {
                       <div className="space-y-2 text-xs">
                         <div>
                           <label className="text-slate-400 block mb-1">Shop</label>
-                          <select value={selectedPlatformPayment.tenantId || ''} onChange={e => setSelectedPlatformPayment({ ...selectedPlatformPayment, tenantId: e.target.value })} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                          <SearchableSelect value={selectedPlatformPayment.tenantId || ''} onChange={e => setSelectedPlatformPayment({ ...selectedPlatformPayment, tenantId: e.target.value })} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                             <option value="">— Shop —</option>
                             {(superTenants || []).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                          </select>
+                          </SearchableSelect>
                         </div>
                         <div>
                           <label className="text-slate-400 block mb-1">Amount</label>
@@ -4270,15 +5076,14 @@ export default function App() {
                             const p = selectedPlatformPayment;
                             const res = await apiFetch('/api/super-payments/' + p.id, { method: 'PUT', body: JSON.stringify(p) });
                             if (!res.ok) { const d = await res.json().catch(() => ({})); return alert(d.error || 'Update failed'); }
-                            const r = await apiFetch('/api/super-payments');
-                            if (r.ok) { const d = await r.json(); setSuperPayments(d.payments || []); }
+                            await refreshPlatformAll();
                             setSelectedPlatformPayment(null);
                           }}>Save</button>
                           <button type="button" className="py-2 px-3 bg-red-600 text-white font-bold rounded" onClick={async () => {
                             if (!confirm('Delete this payment record?')) return;
                             const res = await apiFetch('/api/super-payments/' + selectedPlatformPayment.id, { method: 'DELETE' });
                             if (!res.ok) { const d = await res.json().catch(() => ({})); return alert(d.error || 'Delete failed'); }
-                            setSuperPayments((superPayments || []).filter(x => x.id !== selectedPlatformPayment.id));
+                            await refreshPlatformAll();
                             setSelectedPlatformPayment(null);
                           }}>Delete</button>
                           <button type="button" className="py-2 px-3 bg-slate-800 text-white font-bold rounded" onClick={() => setSelectedPlatformPayment(null)}>Close</button>
@@ -4290,28 +5095,34 @@ export default function App() {
               </div>
             </div>
           )}
+
           {selectedPlatformShop && (
-            <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-[80] p-4" onClick={() => setSelectedPlatformShop(null)}>
-              <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-3" onClick={e => e.stopPropagation()}>
+            <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-[80] p-3 sm:p-4 overflow-y-auto" onClick={() => setSelectedPlatformShop(null)}>
+              <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-3 shadow-2xl max-h-[90vh] overflow-y-auto my-auto" onClick={e => e.stopPropagation()}>
                 <div className="flex justify-between border-b border-slate-800 pb-2">
-                  <h4 className="font-bold text-white text-sm">Edit shop</h4>
+                  <h4 className="font-bold text-white text-sm">Edit shop: {selectedPlatformShop.name}</h4>
                   <button type="button" onClick={() => setSelectedPlatformShop(null)} className="text-slate-400">✕</button>
+                </div>
+                <div className="grid grid-cols-3 gap-2 bg-slate-950 p-2.5 rounded-lg border border-slate-800 text-[11px]">
+                  <div><span className="text-slate-500 block">Total Spend</span><strong className="text-emerald-400">KSh {Number(selectedPlatformShop.totalSpend || 0).toLocaleString()}</strong></div>
+                  <div><span className="text-slate-500 block">Tenure</span><strong className="text-white">{selectedPlatformShop.daysOnPlatform ?? 0}d</strong></div>
+                  <div><span className="text-slate-500 block">Idle</span><strong className="text-amber-300">{selectedPlatformShop.daysInactive ?? 0}d</strong></div>
                 </div>
                 <div className="space-y-2 text-xs">
                   <div><label className="text-slate-400 block mb-1">Shop name</label>
                     <input value={selectedPlatformShop.name || ''} onChange={e => setSelectedPlatformShop({ ...selectedPlatformShop, name: e.target.value })} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
                   <div><label className="text-slate-400 block mb-1">Plan</label>
-                    <select value={selectedPlatformShop.plan || 'starter'} onChange={e => setSelectedPlatformShop({ ...selectedPlatformShop, plan: e.target.value })} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                    <SearchableSelect value={selectedPlatformShop.plan || 'starter'} onChange={e => setSelectedPlatformShop({ ...selectedPlatformShop, plan: e.target.value })} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                       {(superPlans.length ? superPlans : [{ id: 'starter' }, { id: 'business' }, { id: 'premium' }]).map(p => <option key={p.id} value={p.id}>{p.label || p.id}</option>)}
-                    </select></div>
+                    </SearchableSelect></div>
                   <div><label className="text-slate-400 block mb-1">Access</label>
-                    <select value={selectedPlatformShop.status || 'active'} onChange={e => setSelectedPlatformShop({ ...selectedPlatformShop, status: e.target.value })} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                    <SearchableSelect value={selectedPlatformShop.status || 'active'} onChange={e => setSelectedPlatformShop({ ...selectedPlatformShop, status: e.target.value })} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                       <option value="active">active</option>
                       <option value="trial">trial</option>
                       <option value="pending">pending</option>
                       <option value="suspended">suspended</option>
                       <option value="deleted">deleted</option>
-                    </select></div>
+                    </SearchableSelect></div>
                   <div><label className="text-slate-400 block mb-1">Max users</label>
                     <input type="number" value={selectedPlatformShop.maxUsers ?? 5} onChange={e => setSelectedPlatformShop({ ...selectedPlatformShop, maxUsers: parseInt(e.target.value) || 1 })} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
                   <div><label className="text-slate-400 block mb-1">Notes</label>
@@ -4320,7 +5131,7 @@ export default function App() {
                     <button type="button" className="flex-1 py-2 bg-amber-500 text-slate-950 font-bold rounded" onClick={async () => {
                       const t = selectedPlatformShop;
                       await apiFetch('/api/super-tenants/' + t.id, { method: 'PUT', body: JSON.stringify({ name: t.name, plan: t.plan, status: t.status, maxUsers: t.maxUsers, notes: t.notes }) });
-                      setSuperTenants(superTenants.map(x => x.id === t.id ? { ...x, ...t } : x));
+                      await refreshPlatformAll();
                       setSelectedPlatformShop(null);
                     }}>Save</button>
                     {selectedPlatformShop.id !== 'tenant-default' && (
@@ -4340,10 +5151,11 @@ export default function App() {
               </div>
             </div>
           )}
-                    {superTab === 'profile' && (
-            <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 max-w-md space-y-3 text-xs">
-              <h3 className="font-bold text-white">Update platform username / display name</h3>
-              <p className="text-[10px] text-slate-500">Saved to platform_profile. For env login, set Cloudflare SUPER_ADMIN_NAME to the same username; PIN remains SUPER_ADMIN_PIN.</p>
+
+          {superTab === 'profile' && (
+            <div className="bg-[#0f172a] border border-slate-700 rounded-xl p-5 max-w-md space-y-3 text-xs">
+              <h3 className="font-bold text-white text-sm">Update platform username / display name</h3>
+              <p className="text-[11px] text-slate-400">Saved to platform_profile. For env login, set Cloudflare SUPER_ADMIN_NAME to the same username; PIN remains SUPER_ADMIN_PIN.</p>
               <input placeholder="Username" value={superProfile.username || ''} onChange={e => setSuperProfile({ ...superProfile, username: e.target.value })} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" />
               <input placeholder="Display name" value={superProfile.displayName || ''} onChange={e => setSuperProfile({ ...superProfile, displayName: e.target.value })} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" />
               <button type="button" onClick={async () => {
@@ -4400,6 +5212,14 @@ export default function App() {
             color: #000000 !important;
             background: transparent !important;
           }
+          #printable-receipt img, #printable-payroll img {
+            visibility: visible !important;
+            display: block !important;
+            max-height: 55px !important;
+            max-width: 160px !important;
+            margin: 0 auto 6px auto !important;
+            object-fit: contain !important;
+          }
           #printable-payroll input[type=number] { appearance: none !important; -moz-appearance: textfield !important; border: 0 !important; box-shadow: none !important; }
           #printable-payroll input[type=number]::-webkit-inner-spin-button, #printable-payroll input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none !important; margin: 0 !important; }
           body:has(#printable-payroll) { }
@@ -4422,22 +5242,30 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-2 ml-auto">
-            {(accessibleBranches || []).length > 0 && (
-              <select
+            {hasMultiLocationAccess && (accessibleBranches || []).length > 1 ? (
+              <SearchableSelect
                 value={currentBranchId || ''}
                 onChange={e => {
                   const v = e.target.value;
                   setCurrentBranchId(v);
                   try { localStorage.setItem('erp_current_branch', v); } catch (err) {}
                 }}
-                className="bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-[11px] text-white max-w-[140px]"
-                title="Active location (role-limited)"
+                className="bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[11px] text-white max-w-[150px] focus:outline-none focus:border-emerald-500 font-medium"
+                title="Active location (multi-location allowed)"
               >
-                {(accessibleBranches || []).length > 1 && <option value="all">All locations</option>}
+                <option value="all">All locations</option>
                 {(accessibleBranches || []).map(b => (
                   <option key={b.id} value={b.id}>{b.name}{b.isDefault ? ' ★' : ''}</option>
                 ))}
-              </select>
+              </SearchableSelect>
+            ) : (
+              <div 
+                className="flex items-center gap-1.5 bg-slate-900/90 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[11px] text-emerald-400 font-semibold max-w-[160px] truncate shadow-sm"
+                title={`Assigned location: ${(accessibleBranches[0]?.name || (branches || []).find(b => b.id === (currentBranchId || activeBranchId))?.name || shopProfile?.location || 'Assigned Location')}`}
+              >
+                <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span className="truncate">{(accessibleBranches[0]?.name || (branches || []).find(b => b.id === (currentBranchId || activeBranchId))?.name || shopProfile?.location || 'Assigned Location')}</span>
+              </div>
             )}
             <button type="button" onClick={() => { setProfileNameDraft(currentUser?.name || ''); setProfileImage(currentUser?.photo || ''); setUserProfileModalOpen(true); }} className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg px-2.5 py-1.5 text-left" title="Open user profile">
               {profileImage || (currentUser?.id && localStorage.getItem(`erp_user_photo_${currentUser.id}`)) ? <img src={profileImage || localStorage.getItem(`erp_user_photo_${currentUser?.id}`)} alt="User profile" className="w-8 h-8 rounded-full object-cover border border-slate-700" /> : <span className="w-8 h-8 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center font-bold text-xs">{(currentUser?.name || 'U').trim().charAt(0).toUpperCase()}</span>}
@@ -4489,7 +5317,7 @@ export default function App() {
               <UserCheck className="w-4 h-4" /> HR
             </button>
           )}
-          {(isAdminUser || privileges.reports?.view || privileges.reportSales?.view || privileges.reportPurchase?.view || privileges.reportExpense?.view || privileges.reportHr?.view || privileges.reportCustomer?.view || privileges.reportInventory?.view || privileges.reportAging?.view || privileges.reportFinancial?.view || privileges.reportLedger?.view) && (
+          {(isAdminUser || privileges.reports?.view || privileges.reportSales?.view || privileges.reportPurchase?.view || privileges.reportExpense?.view || privileges.reportHr?.view || privileges.reportCustomer?.view) && (
             <button onClick={() => setActiveTabPersist('reports')} className={`flex items-center gap-2 px-4 py-2 text-xs font-medium border-b-2 whitespace-nowrap ${activeTab === 'reports' ? 'border-emerald-500 text-emerald-400' : 'border-transparent text-slate-400'}`}>
               <FileText className="w-4 h-4" /> Reports
             </button>
@@ -4533,12 +5361,12 @@ export default function App() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-slate-400">Timeframe:</span>
-                <select value={dashboardTimeframe} onChange={e => setDashboardTimeframe(e.target.value)} className="bg-slate-900 border border-slate-700 text-xs text-emerald-400 font-semibold rounded-lg px-3 py-1.5 focus:outline-none">
+                <SearchableSelect value={dashboardTimeframe} onChange={e => setDashboardTimeframe(e.target.value)} className="bg-slate-900 border border-slate-700 text-xs text-emerald-400 font-semibold rounded-lg px-3 py-1.5 focus:outline-none">
                   <option value="today">Daily (Today)</option>
                   <option value="this_week">Weekly (This Week)</option>
                   <option value="this_month">Monthly (This Month)</option>
                   <option value="custom">Custom Date Range</option>
-                </select>
+                </SearchableSelect>
                 {dashboardTimeframe === 'custom' && (
                   <div className="flex items-center gap-1">
                     <input type="date" value={dashCustomStartDate} onChange={e => setDashCustomStartDate(e.target.value)} className="bg-slate-900 border border-slate-700 rounded text-xs px-2 py-1 text-white" />
@@ -4583,16 +5411,447 @@ export default function App() {
               </div>
             </div>
 
+            {/* Pending Management Approvals (Leaves, Purchases, Returns) */}
+            {(isAdminUser || (currentUser?.role || '').toLowerCase() === 'manager' || canUpdate('purchase') || canUpdate('hr') || canUpdate('sales')) && (
+              <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700/80 space-y-4 shadow-xl">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                      <Clock className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm sm:text-base font-bold text-white">Pending Management Approvals</h3>
+                        {totalPendingApprovals > 0 ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-500 text-slate-950">
+                            {totalPendingApprovals} Action Required
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                            All Cleared
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-400">Review employee leaves, supplier purchase orders, and stock returns awaiting authorization.</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-1 bg-slate-900/80 p-1 rounded-xl border border-slate-700">
+                    <button type="button" onClick={() => setDashboardApprovalFilter('all')} className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${dashboardApprovalFilter === 'all' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}>
+                      All ({totalPendingApprovals})
+                    </button>
+                    <button type="button" onClick={() => setDashboardApprovalFilter('leaves')} className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${dashboardApprovalFilter === 'leaves' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}>
+                      Leaves ({pendingLeavesList.length})
+                    </button>
+                    <button type="button" onClick={() => setDashboardApprovalFilter('purchases')} className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${dashboardApprovalFilter === 'purchases' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}>
+                      Purchases ({pendingPurchasesList.length})
+                    </button>
+                    <button type="button" onClick={() => setDashboardApprovalFilter('returns')} className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${dashboardApprovalFilter === 'returns' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}>
+                      Returns ({pendingReturnsList.length})
+                    </button>
+                  </div>
+                </div>
+
+                {totalPendingApprovals === 0 ? (
+                  <div className="py-6 text-center text-slate-400 flex flex-col items-center justify-center space-y-2 bg-slate-900/40 rounded-xl border border-slate-700/50">
+                    <div className="w-10 h-10 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+                      <CheckCircle className="w-5 h-5" />
+                    </div>
+                    <p className="text-xs font-semibold text-slate-300">All management approvals are up to date.</p>
+                    <p className="text-[11px] text-slate-500">There are no pending leaves, draft purchase orders, or customer/supplier return requests.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {/* Pending Leaves */}
+                    {(dashboardApprovalFilter === 'all' || dashboardApprovalFilter === 'leaves') && pendingLeavesList.map(lr => (
+                      <div key={lr.id} className="bg-slate-900 border border-slate-700 rounded-xl p-3.5 space-y-2 flex flex-col justify-between">
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-sky-400 bg-sky-500/10 px-2 py-0.5 rounded border border-sky-500/20">Leave Request</span>
+                            <span className="text-[10px] text-slate-400">{lr.days} Day(s)</span>
+                          </div>
+                          <h4 className="text-xs font-bold text-white">{lr.employeeName}</h4>
+                          <p className="text-[11px] text-emerald-400 font-semibold">{lr.leaveType || 'Annual Leave'}</p>
+                          <p className="text-[10px] text-slate-400">{lr.startDate} to {lr.endDate}</p>
+                          {lr.reason && <p className="text-[11px] text-slate-300 italic bg-slate-950/60 p-2 rounded border border-slate-800">"{lr.reason}"</p>}
+                        </div>
+                        <div className="flex items-center gap-2 pt-2 border-t border-slate-800">
+                          <button type="button" onClick={() => handleLeaveAction(lr, 'Approved')} className="flex-1 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg text-xs transition-colors">
+                            Approve
+                          </button>
+                          <button type="button" onClick={() => handleLeaveAction(lr, 'Rejected')} className="flex-1 py-1.5 bg-red-500/15 hover:bg-red-500/25 text-red-400 border border-red-500/30 font-bold rounded-lg text-xs transition-colors">
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+
+                    {/* Pending Purchases */}
+                    {(dashboardApprovalFilter === 'all' || dashboardApprovalFilter === 'purchases') && pendingPurchasesList.map(po => {
+                      const poAmtNum = parseFloat(po.amount) || 0;
+                      return (
+                        <div key={po.id} className="bg-slate-900 border border-slate-700 rounded-xl p-3.5 space-y-2 flex flex-col justify-between">
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">Purchase Order</span>
+                              <span className="text-[10px] font-mono text-slate-400">{po.id}</span>
+                            </div>
+                            <h4 className="text-xs font-bold text-white">{po.supplierName}</h4>
+                            <p className="text-[11px] text-slate-300">{po.itemName} ({po.quantity} pcs)</p>
+                            <p className="text-sm font-bold text-emerald-400">{shopProfile.currency} {poAmtNum.toLocaleString()}</p>
+                            <p className="text-[10px] text-slate-400">Created {po.date || '—'} by {po.createdBy || 'Staff'}</p>
+                          </div>
+                          <div className="flex items-center gap-2 pt-2 border-t border-slate-800">
+                            <button type="button" onClick={async () => {
+                              const amt = parseFloat(po.amount) || 0;
+                              const paid = parseFloat(po.paidAmount) || 0;
+                              const updated = {
+                                ...po,
+                                workflowStatus: 'Approved',
+                                bookedPayable: amt,
+                                paidAmount: paid,
+                                balanceDue: Math.max(0, amt - paid),
+                                paymentStatus: paid <= 0 ? 'Unpaid' : (paid >= amt ? 'Paid' : 'Partial'),
+                                received: false
+                              };
+                              const ok = await upsertPO(updated);
+                              if (ok) {
+                                logAudit('approve', 'purchase_orders', `Approved PO ${po.id} from Dashboard (${shopProfile.currency} ${amt.toLocaleString()})`);
+                                alert(`Purchase Order ${po.id} approved successfully.`);
+                              }
+                            }} className="flex-1 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg text-xs transition-colors">
+                              Approve
+                            </button>
+                            <button type="button" onClick={() => {
+                              setActiveTabPersist('purchase');
+                              setPurchaseSubTab('orders');
+                              setSelectedPO(po);
+                            }} className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-lg text-xs transition-colors">
+                              Details
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {/* Pending Returns */}
+                    {(dashboardApprovalFilter === 'all' || dashboardApprovalFilter === 'returns') && pendingReturnsList.map(rr => (
+                      <div key={rr.id} className="bg-slate-900 border border-slate-700 rounded-xl p-3.5 space-y-2 flex flex-col justify-between">
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${rr.kind === 'sale' ? 'text-blue-400 bg-blue-500/10 border-blue-500/20' : 'text-purple-400 bg-purple-500/10 border-purple-500/20'}`}>
+                              {rr.kind === 'sale' ? 'Sales Return' : 'Purchase Return'}
+                            </span>
+                            <span className="text-[10px] text-slate-400">{rr.at ? new Date(rr.at).toLocaleDateString() : '—'}</span>
+                          </div>
+                          <h4 className="text-xs font-bold text-white font-mono">{rr.refId}</h4>
+                          <p className="text-[11px] text-slate-300">Requested by: <span className="text-white font-medium">{rr.requestedBy || 'Staff'}</span></p>
+                          {rr.reason && <p className="text-[11px] text-slate-300 italic bg-slate-950/60 p-2 rounded border border-slate-800">"{rr.reason}"</p>}
+                        </div>
+                        <div className="flex items-center gap-2 pt-2 border-t border-slate-800">
+                          <button type="button" onClick={() => handleApproveReturnRequest(rr)} className="flex-1 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg text-xs transition-colors">
+                            Approve
+                          </button>
+                          <button type="button" onClick={() => handleRejectReturnRequest(rr)} className="flex-1 py-1.5 bg-red-500/15 hover:bg-red-500/25 text-red-400 border border-red-500/30 font-bold rounded-lg text-xs transition-colors">
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Executive Graphical Reports & Analytics Section */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <BarChart3 className="w-5 h-5 text-emerald-400" />
+                  <h3 className="text-base font-bold text-white">Visual Reports & Business Distribution</h3>
+                </div>
+                <span className="text-xs text-slate-400">Graphical analysis based on {dashboardTimeframe === 'today' ? 'Today' : dashboardTimeframe === 'this_week' ? 'This Week' : dashboardTimeframe === 'this_month' ? 'This Month' : 'Selected Dates'}</span>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {/* 1. 7-Day Revenue Trend (Interactive SVG Bar Chart) */}
+                <div className="lg:col-span-2 bg-slate-800 p-5 rounded-2xl border border-slate-700 space-y-4 shadow-xl">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">7-Day Sales & Revenue Trend</h4>
+                      <p className="text-[11px] text-slate-400 mt-0.5">Daily cashflow and sales volume performance.</p>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs">
+                      <div className="text-right">
+                        <span className="text-[10px] text-slate-400 block">7-Day Total</span>
+                        <span className="text-white font-bold">{shopProfile.currency} {total7DayRevenue.toLocaleString()}</span>
+                      </div>
+                      <div className="text-right border-l border-slate-700 pl-3">
+                        <span className="text-[10px] text-slate-400 block">Daily Average</span>
+                        <span className="text-emerald-400 font-bold">{shopProfile.currency} {avgDailyRevenue.toLocaleString()}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* SVG Bar Chart */}
+                  <div className="w-full h-52 bg-slate-900/60 rounded-xl p-3 border border-slate-700/50 flex flex-col justify-between">
+                    <svg viewBox="0 0 540 160" className="w-full h-full overflow-visible">
+                      <defs>
+                        <linearGradient id="revenueBarGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#10b981" />
+                          <stop offset="100%" stopColor="#059669" stopOpacity="0.6" />
+                        </linearGradient>
+                      </defs>
+                      {/* Grid Lines */}
+                      {[0.25, 0.5, 0.75, 1].map((lvl, idx) => {
+                        const y = 120 - lvl * 100;
+                        return (
+                          <g key={idx}>
+                            <line x1="30" y1={y} x2="520" y2={y} stroke="#334155" strokeDasharray="3 3" strokeWidth="0.8" />
+                            <text x="24" y={y + 3} textAnchor="end" fontSize="8" fill="#64748b">
+                              {Math.round((maxDaySale * lvl) / 1000)}k
+                            </text>
+                          </g>
+                        );
+                      })}
+                      {/* Baseline */}
+                      <line x1="30" y1="120" x2="520" y2="120" stroke="#475569" strokeWidth="1" />
+
+                      {/* Bars */}
+                      {last7DaysSalesData.map((d, i) => {
+                        const barW = 42;
+                        const gap = (490 - 7 * barW) / 6;
+                        const x = 30 + i * (barW + gap);
+                        const h = maxDaySale > 0 ? Math.max(4, (d.total / maxDaySale) * 100) : 4;
+                        const y = 120 - h;
+                        return (
+                          <g key={d.date} className="group cursor-pointer">
+                            <rect
+                              x={x}
+                              y={y}
+                              width={barW}
+                              height={h}
+                              rx="5"
+                              fill="url(#revenueBarGrad)"
+                              className="transition-all hover:brightness-125"
+                            />
+                            {/* Value label on top of bar */}
+                            {d.total > 0 && (
+                              <text x={x + barW / 2} y={y - 5} textAnchor="middle" fontSize="9" fill="#10b981" fontWeight="bold">
+                                {d.total >= 1000 ? `${(d.total / 1000).toFixed(1)}k` : d.total}
+                              </text>
+                            )}
+                            {/* Day and Date label below baseline */}
+                            <text x={x + barW / 2} y="136" textAnchor="middle" fontSize="10" fill="#94a3b8" fontWeight="600">
+                              {d.dayName}
+                            </text>
+                            <text x={x + barW / 2} y="148" textAnchor="middle" fontSize="8" fill="#64748b">
+                              {d.dayDisplay.split(' ')[1]}
+                            </text>
+                          </g>
+                        );
+                      })}
+                    </svg>
+                  </div>
+                </div>
+
+                {/* 2. Sales by Payment Method (Donut / Pie Chart) */}
+                <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700 space-y-4 shadow-xl flex flex-col justify-between">
+                  <div>
+                    <h4 className="text-xs font-bold text-sky-400 uppercase tracking-wider">Payment Method Share</h4>
+                    <p className="text-[11px] text-slate-400 mt-0.5">Cash vs M-Pesa vs Credit vs Layby split.</p>
+                  </div>
+
+                  {/* Donut Chart SVG */}
+                  <div className="flex items-center justify-center py-2">
+                    <div className="relative w-40 h-40">
+                      <svg viewBox="0 0 120 120" className="w-full h-full -rotate-90">
+                        {/* Background track circle */}
+                        <circle cx="60" cy="60" r="48" fill="none" stroke="#1e293b" strokeWidth="14" />
+                        {(() => {
+                          const C = 2 * Math.PI * 48; // ≈ 301.59
+                          let offset = 0;
+                          return paymentBreakdownData.map((slice, i) => {
+                            const strokeLen = (slice.pct / 100) * C;
+                            const currentOffset = offset;
+                            offset += strokeLen;
+                            return (
+                              <circle
+                                key={i}
+                                cx="60"
+                                cy="60"
+                                r="48"
+                                fill="none"
+                                stroke={slice.color}
+                                strokeWidth="14"
+                                strokeDasharray={`${strokeLen} ${C - strokeLen}`}
+                                strokeDashoffset={-currentOffset}
+                                className="transition-all hover:opacity-80"
+                              />
+                            );
+                          });
+                        })()}
+                      </svg>
+                      {/* Center Content */}
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
+                        <span className="text-[10px] text-slate-400 uppercase">Sales</span>
+                        <span className="text-xs font-extrabold text-white">{shopProfile.currency}</span>
+                        <span className="text-sm font-bold text-emerald-400 leading-tight">
+                          {totalRevenue >= 1000000 ? `${(totalRevenue / 1000000).toFixed(1)}M` : totalRevenue >= 1000 ? `${(totalRevenue / 1000).toFixed(0)}k` : totalRevenue}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Legend list */}
+                  <div className="space-y-1.5 max-h-36 overflow-y-auto">
+                    {paymentBreakdownData.length === 0 ? (
+                      <p className="text-[11px] text-slate-500 text-center py-2">No payment transactions yet.</p>
+                    ) : (
+                      paymentBreakdownData.map(item => (
+                        <div key={item.label} className="flex items-center justify-between text-[11px]">
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: item.color }}></span>
+                            <span className="text-slate-200">{item.label}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-slate-400 font-mono">{item.pct.toFixed(1)}%</span>
+                            <span className="text-white font-semibold">{shopProfile.currency} {item.amount.toLocaleString()}</span>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Second Row: Top Categories Progress Bar + Expense Breakdown Donut */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* 3. Top Selling Categories (Horizontal Progress Bar Distribution) */}
+                <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700 space-y-4 shadow-xl">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider">Top Product Categories</h4>
+                      <p className="text-[11px] text-slate-400 mt-0.5">Revenue and unit distribution by item category.</p>
+                    </div>
+                    <span className="text-xs text-slate-400 font-semibold">{topSellingCategories.length} Categories</span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {topSellingCategories.length === 0 ? (
+                      <p className="text-xs text-slate-500 text-center py-6">No category sales recorded in this period.</p>
+                    ) : (
+                      topSellingCategories.map((cat, idx) => {
+                        const totalCatSales = topSellingCategories.reduce((s, c) => s + (c.totalSales || 0), 0);
+                        const pct = totalCatSales > 0 ? (cat.totalSales / totalCatSales) * 100 : 0;
+                        const barColors = ['bg-emerald-500', 'bg-sky-500', 'bg-amber-500', 'bg-purple-500', 'bg-pink-500'];
+                        return (
+                          <div key={cat.category} className="space-y-1">
+                            <div className="flex justify-between text-xs">
+                              <span className="font-semibold text-white flex items-center gap-1.5">
+                                <span className={`w-2 h-2 rounded-full ${barColors[idx % barColors.length]}`}></span>
+                                {cat.category}
+                              </span>
+                              <div className="flex items-center gap-3">
+                                <span className="text-slate-400 font-mono">{cat.qty} pcs</span>
+                                <span className="font-bold text-white">{shopProfile.currency} {cat.totalSales.toLocaleString()}</span>
+                                <span className="text-emerald-400 font-semibold w-10 text-right">{pct.toFixed(0)}%</span>
+                              </div>
+                            </div>
+                            <div className="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-700/60">
+                              <div
+                                className={`h-full rounded-full ${barColors[idx % barColors.length]} transition-all duration-500`}
+                                style={{ width: `${Math.max(3, pct)}%` }}
+                              ></div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                {/* 4. Operating Expenses by Category (Donut / Pie Chart) */}
+                <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700 space-y-4 shadow-xl">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-xs font-bold text-rose-400 uppercase tracking-wider">Operating Expense Breakdown</h4>
+                      <p className="text-[11px] text-slate-400 mt-0.5">Where operational expenses are concentrated.</p>
+                    </div>
+                    <span className="text-xs text-rose-400 font-bold">{shopProfile.currency} {totalOperatingExpenses.toLocaleString()}</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
+                    {/* SVG Donut */}
+                    <div className="flex items-center justify-center">
+                      <div className="relative w-36 h-36">
+                        <svg viewBox="0 0 120 120" className="w-full h-full -rotate-90">
+                          <circle cx="60" cy="60" r="48" fill="none" stroke="#1e293b" strokeWidth="14" />
+                          {(() => {
+                            const C = 2 * Math.PI * 48;
+                            let offset = 0;
+                            return expenseBreakdownData.map((slice, i) => {
+                              const strokeLen = (slice.pct / 100) * C;
+                              const currentOffset = offset;
+                              offset += strokeLen;
+                              return (
+                                <circle
+                                  key={i}
+                                  cx="60"
+                                  cy="60"
+                                  r="48"
+                                  fill="none"
+                                  stroke={slice.color}
+                                  strokeWidth="14"
+                                  strokeDasharray={`${strokeLen} ${C - strokeLen}`}
+                                  strokeDashoffset={-currentOffset}
+                                  className="transition-all hover:opacity-80"
+                                />
+                              );
+                            });
+                          })()}
+                        </svg>
+                        <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
+                          <span className="text-[10px] text-slate-400 uppercase">Expense</span>
+                          <span className="text-xs font-bold text-rose-400">
+                            {totalOperatingExpenses >= 1000 ? `${(totalOperatingExpenses / 1000).toFixed(1)}k` : totalOperatingExpenses}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Expense Categories List */}
+                    <div className="space-y-1.5 max-h-36 overflow-y-auto">
+                      {expenseBreakdownData.length === 0 ? (
+                        <p className="text-xs text-slate-500 py-4 text-center">No expenses in this period.</p>
+                      ) : (
+                        expenseBreakdownData.map(item => (
+                          <div key={item.label} className="flex items-center justify-between text-[11px]">
+                            <div className="flex items-center gap-1.5 truncate max-w-[130px]">
+                              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: item.color }}></span>
+                              <span className="text-slate-200 truncate">{item.label}</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className="text-slate-400 font-mono">{item.pct.toFixed(0)}%</span>
+                              <span className="text-white font-semibold">{shopProfile.currency} {item.amount.toLocaleString()}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
 
             <div className="space-y-4">
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                 <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 space-y-2">
                   <div className="flex justify-between items-center">
                     <h4 className="text-xs font-bold text-white">Period Compare</h4>
-                    <select value={dashboardCompareMode} onChange={e => setDashboardCompareMode(e.target.value)} className="bg-slate-900 border border-slate-700 rounded text-[10px] text-white px-1 py-0.5">
+                    <SearchableSelect value={dashboardCompareMode} onChange={e => setDashboardCompareMode(e.target.value)} className="bg-slate-900 border border-slate-700 rounded text-[10px] text-white px-1 py-0.5">
                       <option value="last_month">vs Last Month</option>
                       <option value="last_year">vs Last Year</option>
-                    </select>
+                    </SearchableSelect>
                   </div>
                   <p className="text-[10px] text-slate-400">This month: <span className="text-emerald-400 font-bold">{shopProfile.currency} {currentMonthSalesTotal.toLocaleString()}</span></p>
                   <p className="text-[10px] text-slate-400">{comparePeriod.label}: <span className="text-sky-400 font-bold">{shopProfile.currency} {compareSalesTotal.toLocaleString()}</span></p>
@@ -4737,16 +5996,16 @@ export default function App() {
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-slate-400">Filter Category:</span>
-                  <select 
+                  <SearchableSelect 
                     value={posCategoryFilter} 
                     onChange={e => setPosCategoryFilter(e.target.value)} 
                     className="bg-slate-900 border border-slate-700 text-xs text-emerald-400 font-semibold rounded px-2.5 py-2 focus:outline-none"
                   >
                     <option value="all">All Categories</option>
-                    {asArr(categories).map(cat => (
+                    {(categories || []).map(cat => (
                       <option key={cat.id} value={cat.name}>{cat.name}</option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
@@ -4779,12 +6038,12 @@ export default function App() {
                 <div className="mb-3 space-y-2">
                   <div>
                     <label className="text-[10px] text-slate-400 block mb-1">Price List</label>
-                    <select value={posPriceList} onChange={e => setPosPriceList(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-white mb-2">
+                    <SearchableSelect value={posPriceList} onChange={e => setPosPriceList(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-white mb-2">
                       <option value="retail">Retail</option>
                       <option value="wholesale">Wholesale</option>
-                    </select>
+                    </SearchableSelect>
                     <label className="text-[10px] text-slate-400 block mb-1">Select Customer (Mandatory):</label>
-                    <select value={posSelectedCustomer} onChange={e => {
+                    <SearchableSelect value={posSelectedCustomer} onChange={e => {
                         const name = e.target.value;
                         setPosSelectedCustomer(name);
                         const cust = (customers || []).find(c => c.name === name);
@@ -4811,17 +6070,46 @@ export default function App() {
                         }
                       }} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-white" required>
                       <option value="">-- Choose Customer --</option>
-                      {asArr(customers).map(c => <option key={c.id} value={c.name}>{c.name} (Eligible: {normalizeEligibility(c.eligibility).join(', ')}{c.paymentTerm ? ` · ${c.paymentTerm}` : ''}{(parseFloat(c.loyaltyPoints)||0) > 0 ? ` · ${Math.floor(parseFloat(c.loyaltyPoints)||0)} pts` : ''})</option>)}
-                    </select>
+                      {(customers || []).map(c => <option key={c.id} value={c.name}>{c.name} (Eligible: {(c.eligibility || ['Paid']).join(', ')}{parseFloat(c.creditLimit) > 0 ? ` · Limit: ${shopProfile.currency} ${parseFloat(c.creditLimit).toLocaleString()}` : ''}{c.paymentTerm ? ` · ${c.paymentTerm}` : ''}{loyaltySettings.enabled ? ` · ${(parseFloat(c.loyaltyPoints) || 0).toLocaleString()} pts` : ''})</option>)}
+                    </SearchableSelect>
+                    {posSelectedCustomer && (() => {
+                      const selCust = (customers || []).find(c => c.name === posSelectedCustomer);
+                      if (!selCust) return null;
+                      const cLimit = parseFloat(selCust.creditLimit) || 0;
+                      const outstandingDebt = (sales || [])
+                        .filter(s => (s.customerName === selCust.name || (selCust.id && s.customerId === selCust.id)) && (parseFloat(s.balanceDue) || 0) > 0.009)
+                        .reduce((sum, s) => sum + (parseFloat(s.balanceDue) || 0), 0);
+                      if (cLimit <= 0 && outstandingDebt <= 0) return null;
+                      const isOver = cLimit > 0 && outstandingDebt > cLimit;
+                      return (
+                        <div className={`mt-1.5 px-2.5 py-1.5 rounded-lg border flex flex-wrap items-center justify-between gap-1 text-[11px] ${isOver ? 'bg-rose-500/10 border-rose-500/40 text-rose-300' : 'bg-slate-900 border-slate-700 text-slate-300'}`}>
+                          <span>Credit Limit: <strong className="text-white">{cLimit > 0 ? `${shopProfile.currency} ${cLimit.toLocaleString()}` : 'Unlimited'}</strong></span>
+                          <span>Unpaid Balance: <strong className={outstandingDebt > 0 ? (isOver ? 'text-rose-400 font-bold' : 'text-amber-400') : 'text-emerald-400'}>{shopProfile.currency} {outstandingDebt.toLocaleString()}</strong></span>
+                        </div>
+                      );
+                    })()}
+                    {loyaltySettings.enabled && posSelectedCustomer && (() => {
+                      const selCust = (customers || []).find(c => c.name === posSelectedCustomer);
+                      const availPts = parseFloat(selCust?.loyaltyPoints) || 0;
+                      const redeemRate = parseFloat(loyaltySettings.redeemValue) || 1;
+                      const earnRate = parseFloat(loyaltySettings.pointsPerCurrency) || 1;
+                      const willEarn = Math.floor((Math.max(0, (parseFloat(posCashPaid) || 0) + (parseFloat(posMpesaPaid) || 0))) * earnRate);
+                      return (
+                        <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex flex-wrap items-center justify-between gap-1 text-[11px]">
+                          <span className="text-slate-300">Loyalty Points: <strong className="text-emerald-400 tabular-nums">{availPts.toLocaleString()} pts</strong> <span className="text-slate-400">({shopProfile.currency} {(availPts * redeemRate).toLocaleString()})</span></span>
+                          {willEarn > 0 && <span className="text-sky-300 font-semibold tabular-nums">+{willEarn.toLocaleString()} pts on checkout</span>}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="text-[10px] text-slate-400 block mb-1">Sale Type:</label>
-                      <select value={posSaleType} onChange={e => setPosSaleType(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-emerald-400 font-bold">
+                      <SearchableSelect value={posSaleType} onChange={e => setPosSaleType(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-emerald-400 font-bold">
                         <option value="Paid">Paid (Cash / M-Pesa)</option>
                         <option value="Credit">Credit</option>
                         <option value="Layby">Layby</option>
-                      </select>
+                      </SearchableSelect>
                     </div>
                     <div>
                       <label className="text-[10px] text-slate-400 block mb-1">Sale Date:</label>
@@ -5073,6 +6361,7 @@ export default function App() {
                       <th className="py-2 px-3">Phone</th>
                       <th className="py-2 px-3">Location</th>
                       <th className="py-2 px-3">Eligibility</th>
+                      <th className="py-2 px-3">Max Credit Limit</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-700">
@@ -5087,10 +6376,19 @@ export default function App() {
                         <td className="py-3 px-3">{cust.location}</td>
                         <td className="py-3 px-3">
                           <div className="flex gap-1 flex-wrap">
-                            {(normalizeEligibility(cust.eligibility)).map(el => (
+                            {(cust.eligibility || ['Paid']).map(el => (
                               <span key={el} className="bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded font-bold text-[10px]">{el}</span>
                             ))}
                           </div>
+                        </td>
+                        <td className="py-3 px-3">
+                          {parseFloat(cust.creditLimit) > 0 ? (
+                            <span className="text-emerald-400 font-bold tabular-nums">
+                              {shopProfile.currency} {parseFloat(cust.creditLimit).toLocaleString()}
+                            </span>
+                          ) : (
+                            <span className="text-slate-500 text-[11px]">Unlimited (0)</span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -5135,19 +6433,18 @@ export default function App() {
                         countedMpesa: parseFloat(cashUpForm.countedMpesa) || 0,
                         varCash: (parseFloat(cashUpForm.countedCash) || 0) - cashAtHandAccount,
                         varMpesa: (parseFloat(cashUpForm.countedMpesa) || 0) - mpesaAccountBalance,
-                        notes: cashUpForm.notes || '',
-                        tenantId: (tenantInfo && tenantInfo.id) ? String(tenantInfo.id) : ''
+                        notes: cashUpForm.notes || ''
                       };
-                      saveCashUps([entry, ...asArr(cashUpHistory)].slice(0, 90));
+                      saveCashUps([entry, ...cashUpHistory].slice(0, 90));
                       if (typeof logAudit === 'function') logAudit('cashup', 'cash', entry.id);
                       alert('Cash-up saved.');
                       setCashUpForm({ countedCash: '', countedMpesa: '', notes: '' });
                     }} className="ml-auto px-3 py-1.5 bg-emerald-500 text-slate-950 text-[10px] font-bold rounded">Save Cash-up</button>
                   </div>
-                  {asArr(cashUpHistory).length > 0 && (
+                  {cashUpHistory.length > 0 && (
                     <div className="overflow-x-auto max-h-28">
                       <table className="w-full text-[10px] text-slate-400"><thead><tr><th className="text-left py-1">When</th><th className="text-left">By</th><th className="text-left">Cash var</th><th className="text-left">M-Pesa var</th><th className="text-left">Notes</th></tr></thead>
-                        <tbody>{asArr(cashUpHistory).slice(0, 8).map(cu => (
+                        <tbody>{cashUpHistory.slice(0, 8).map(cu => (
                           <tr key={cu.id}><td className="py-0.5">{cu.at ? new Date(cu.at).toLocaleString() : ''}</td><td>{cu.by}</td><td className={cu.varCash ? 'text-amber-400' : 'text-emerald-400'}>{cu.varCash}</td><td className={cu.varMpesa ? 'text-amber-400' : 'text-emerald-400'}>{cu.varMpesa}</td><td>{cu.notes}</td></tr>
                         ))}</tbody>
                       </table>
@@ -5165,12 +6462,44 @@ export default function App() {
                     </div>
                     <button type="button" onClick={() => exportRowsAsPdf('Sales Report', filterOwn('sales', sales || []).map(s => ({ id: s.id, date: s.date, customer: s.customerName, type: s.saleType || s.type, total: s.totalAmount, paid: s.paidAmount, balance: s.balanceDue, payment: s.paymentMethod, cashier: s.cashier || s.createdBy })))} className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-[10px] font-bold rounded flex items-center gap-1"><Download className="w-3 h-3" /> Download PDF</button>
                   </div>
+                  {(() => {
+                    const pendingSalesReturns = (returnRequests || []).filter(r => r.kind === 'sale' && r.status === 'Pending');
+                    if (!pendingSalesReturns.length) return null;
+                    return (
+                      <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3.5 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-xs font-bold text-amber-300 uppercase tracking-wider">Pending Sales Return Requests ({pendingSalesReturns.length})</h4>
+                          <span className="text-[10px] text-slate-400">{(isAdminUser || canUpdate('sales')) ? 'Manager / Admin approval required' : 'Awaiting Manager approval'}</span>
+                        </div>
+                        <div className="space-y-1.5">
+                          {pendingSalesReturns.map(req => (
+                            <div key={req.id} className="flex flex-wrap items-center justify-between gap-2 bg-slate-900/90 border border-slate-700/80 rounded-lg px-3 py-2 text-xs">
+                              <div>
+                                <span className="font-bold text-white">Sale #{req.refId}</span>
+                                <span className="text-slate-400 ml-2">{req.partyName} · {req.summary}</span>
+                                <span className="text-amber-300 font-semibold ml-2 tabular-nums">Est. {shopProfile.currency} {Number(req.estimatedAmount || 0).toLocaleString()}</span>
+                                <span className="block text-[10px] text-slate-400">Requested by {req.requestedBy || 'Staff'} ({req.requestedRole || 'Staff'}) · {req.createdAt ? new Date(req.createdAt).toLocaleString() : ''}{req.reason ? ` · Reason: ${req.reason}` : ''}</span>
+                              </div>
+                              {(isAdminUser || canUpdate('sales')) ? (
+                                <div className="flex gap-1.5">
+                                  <button type="button" onClick={() => handleApproveReturnRequest(req)} className="px-2.5 py-1 bg-emerald-500 text-slate-950 font-bold rounded text-[10px]">Approve & Process</button>
+                                  <button type="button" onClick={() => handleRejectReturnRequest(req)} className="px-2.5 py-1 bg-red-500/20 text-red-300 font-bold rounded text-[10px]">Reject</button>
+                                </div>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">Pending Manager</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
                 <input aria-label="Sales date from" type="date" value={salesDateStart} onChange={e=>setSalesDateStart(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white" />
                 <input aria-label="Sales date to" type="date" value={salesDateEnd} onChange={e=>setSalesDateEnd(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white" />
-                <select value={salesCustomerFilter} onChange={e=>setSalesCustomerFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Customers</option>{(Array.isArray(customers) ? customers : []).map(c=><option key={c.id} value={c.name}>{c.name}</option>)}</select>
-                <select value={salesTypeFilter} onChange={e=>setSalesTypeFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Types</option>{['Paid','Credit','Layby','Returned'].map(v=><option key={v}>{v}</option>)}</select>
-                <select value={salesPaymentFilter} onChange={e=>setSalesPaymentFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Payment Methods</option>{(Array.isArray(paymentMethods) ? paymentMethods : []).map(pm=><option key={pm.id} value={pm.name}>{pm.name}</option>)}</select>
+                <SearchableSelect value={salesCustomerFilter} onChange={e=>setSalesCustomerFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Customers</option>{customers.map(c=><option key={c.id} value={c.name}>{c.name}</option>)}</SearchableSelect>
+                <SearchableSelect value={salesTypeFilter} onChange={e=>setSalesTypeFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Types</option>{['Paid','Credit','Layby','Returned'].map(v=><option key={v}>{v}</option>)}</SearchableSelect>
+                <SearchableSelect value={salesPaymentFilter} onChange={e=>setSalesPaymentFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Payment Methods</option>{paymentMethods.map(pm=><option key={pm.id} value={pm.name}>{pm.name}</option>)}</SearchableSelect>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs text-slate-300">
@@ -5187,7 +6516,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-700">
-                    {(Array.isArray(filterOwn('sales', Array.isArray(branchSales) ? branchSales : [])) ? filterOwn('sales', Array.isArray(branchSales) ? branchSales : []) : []).filter(s => (!salesDateStart || String(s.date||'').slice(0,10) >= salesDateStart) && (!salesDateEnd || String(s.date||'').slice(0,10) <= salesDateEnd) && (!salesCustomerFilter || s.customerName === salesCustomerFilter) && (!salesTypeFilter || (s.saleType||s.type) === salesTypeFilter) && (!salesPaymentFilter || s.paymentMethod === salesPaymentFilter)).slice((salesPage - 1) * salesPerPage, salesPage * salesPerPage).map((s, idx) => {
+                    {(filterOwn('sales', branchSales || []).filter(s => (!salesDateStart || String(s.date||'').slice(0,10) >= salesDateStart) && (!salesDateEnd || String(s.date||'').slice(0,10) <= salesDateEnd) && (!salesCustomerFilter || s.customerName === salesCustomerFilter) && (!salesTypeFilter || (s.saleType||s.type) === salesTypeFilter) && (!salesPaymentFilter || s.paymentMethod === salesPaymentFilter)).slice((salesPage - 1) * salesPerPage, salesPage * salesPerPage).map((s, idx) => {
                       const absoluteIndex = (salesPage - 1) * salesPerPage + idx;
                       return (
                         <tr 
@@ -5205,7 +6534,7 @@ export default function App() {
                           <td className="py-3 px-3 font-mono text-[11px] text-slate-300">{s.mpesaCode && s.mpesaCode !== 'N/A' ? s.mpesaCode : '—'}</td>
                         </tr>
                       );
-                    })}
+                    }))}
                   </tbody>
                 </table>
               </div>
@@ -5253,41 +6582,41 @@ export default function App() {
               )}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <select value={inventoryCategoryFilter} onChange={e=>setInventoryCategoryFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Categories</option>{[...new Set((inventory||[]).map(i=>i.category).filter(Boolean))].map(v=><option key={v}>{v}</option>)}</select>
-              <select value={inventoryTrackFilter} onChange={e=>setInventoryTrackFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">Track Inventory: All</option><option value="yes">Tracked</option><option value="no">Not Tracked</option></select>
-              <select value={inventoryStatusFilter} onChange={e=>setInventoryStatusFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Statuses</option>{[...new Set((inventory||[]).map(i=>i.status).filter(Boolean))].map(v=><option key={v}>{v}</option>)}</select>
+              <SearchableSelect value={inventoryCategoryFilter} onChange={e=>setInventoryCategoryFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Categories</option>{[...new Set((inventory||[]).map(i=>i.category).filter(Boolean))].map(v=><option key={v}>{v}</option>)}</SearchableSelect>
+              <SearchableSelect value={inventoryTrackFilter} onChange={e=>setInventoryTrackFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">Track Inventory: All</option><option value="yes">Tracked</option><option value="no">Not Tracked</option></SearchableSelect>
+              <SearchableSelect value={inventoryStatusFilter} onChange={e=>setInventoryStatusFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Statuses</option>{[...new Set((inventory||[]).map(i=>i.status).filter(Boolean))].map(v=><option key={v}>{v}</option>)}</SearchableSelect>
             </div>
             <div className="flex flex-wrap gap-1 bg-slate-900/80 p-1 rounded-xl border border-slate-700">
               {[
                 { id: 'items', label: 'Items & Low Stock' },
-                { id: 'transfer', label: 'Transfer Between Locations' },
-                { id: 'movements', label: 'Stock Movement History' }
+                ...(canSeeTransfer ? [{ id: 'transfer', label: 'Transfer Between Locations' }] : []),
+                ...(canSeeStockMovements ? [{ id: 'movements', label: 'Stock Movement History' }] : [])
               ].map(t => (
                 <button key={t.id} type="button" onClick={() => setInventorySubTab(t.id)} className={`px-3 py-2 rounded-lg text-[11px] font-bold ${inventorySubTab === t.id ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}>{t.label}</button>
               ))}
             </div>
-            {inventorySubTab === 'transfer' && (
+            {inventorySubTab === 'transfer' && canSeeTransfer && (
             <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 space-y-3">
               <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Transfer between locations</h4>
               <p className="text-[10px] text-slate-400">Choose source and destination, then add item rows. Categories, customers, suppliers, payment methods, terms and HR stay shared for the parent business.</p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                 <div>
                   <label className="text-[10px] text-slate-400 block mb-1">Source location</label>
-                  <select value={transferForm.fromBranchId || activeBranchId || ''} onChange={e => setTransferForm({ ...transferForm, fromBranchId: e.target.value, lines: transferForm.lines && transferForm.lines.length ? transferForm.lines : [{ itemId: '', qty: '' }] })} className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white">
+                  <SearchableSelect value={transferForm.fromBranchId || activeBranchId || ''} onChange={e => setTransferForm({ ...transferForm, fromBranchId: e.target.value, lines: transferForm.lines && transferForm.lines.length ? transferForm.lines : [{ itemId: '', qty: '' }] })} className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white">
                     <option value="">— Select source —</option>
                     {(accessibleBranches || []).map(b => (
                       <option key={b.id} value={b.id}>{b.name}{b.isDefault ? ' (default)' : ''}</option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
                 <div>
                   <label className="text-[10px] text-slate-400 block mb-1">Destination location</label>
-                  <select value={transferForm.toBranchId || ''} onChange={e => setTransferForm({ ...transferForm, toBranchId: e.target.value })} className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white">
+                  <SearchableSelect value={transferForm.toBranchId || ''} onChange={e => setTransferForm({ ...transferForm, toBranchId: e.target.value })} className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white">
                     <option value="">— Select destination —</option>
                     {(accessibleBranches || []).filter(b => b.id !== (transferForm.fromBranchId || activeBranchId)).map(b => (
                       <option key={b.id} value={b.id}>{b.name}</option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
               </div>
               <div className="space-y-2">
@@ -5306,7 +6635,7 @@ export default function App() {
                   });
                   return (
                     <div key={idx} className="grid grid-cols-1 sm:grid-cols-12 gap-2 text-xs items-center">
-                      <select value={line.itemId || ''} onChange={e => {
+                      <SearchableSelect value={line.itemId || ''} onChange={e => {
                         const lines = [...(transferForm.lines || [{ itemId: '', qty: '' }])];
                         lines[idx] = { ...lines[idx], itemId: e.target.value };
                         setTransferForm({ ...transferForm, lines });
@@ -5315,7 +6644,7 @@ export default function App() {
                         {srcItems.map(i => (
                           <option key={i.id} value={i.id}>{i.name} (qty {i.quantity})</option>
                         ))}
-                      </select>
+                      </SearchableSelect>
                       <input type="number" min="1" placeholder="Qty" value={line.qty || ''} onChange={e => {
                         const lines = [...(transferForm.lines || [{ itemId: '', qty: '' }])];
                         lines[idx] = { ...lines[idx], qty: e.target.value };
@@ -5370,7 +6699,7 @@ export default function App() {
             </div>
             )}
 
-            {inventorySubTab === 'movements' && (
+            {inventorySubTab === 'movements' && canSeeStockMovements && (
             <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Stock Movement History</h4>
@@ -5441,7 +6770,21 @@ export default function App() {
                       onClick={() => setSelectedInventoryItem(item)}
                       className="hover:bg-slate-700/50 cursor-pointer transition-colors"
                     >
-                      <td className="py-2 px-3 font-semibold text-white">{item.name}</td>
+                      <td className="py-2 px-3 font-semibold text-white">
+                        <div>{item.name}</div>
+                        {(() => {
+                          const vv = parseItemVarianceValues(item);
+                          const entries = Object.entries(vv || {}).filter(([, val]) => val !== undefined && val !== null && String(val).trim() !== '');
+                          if (!entries.length) return null;
+                          return (
+                            <div className="flex flex-wrap gap-1 mt-0.5">
+                              {entries.map(([k, val]) => (
+                                <span key={k} className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-[10px] font-normal text-sky-300">{k}: {val}</span>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                      </td>
                       <td className="py-2 px-3">{item.category}</td>
                       <td className="py-2 px-3 font-bold text-emerald-400">{shopProfile.currency} {item.price}</td>
                       <td className="py-2 px-3 font-mono">{item.trackInventory ? item.quantity : 'Not Tracked'}</td>
@@ -5457,9 +6800,74 @@ export default function App() {
         )}
 
         {activeTab === 'purchase' && (isAdminUser || canView('purchase') || canView('suppliers')) && (
-          <div className="space-y-8">
+          <div className="space-y-6">
+            <div className="flex flex-wrap gap-1 bg-slate-900/80 p-1 rounded-xl border border-slate-700">
+              <button type="button" onClick={() => setPurchaseSubTab('all')} className={`px-3 py-2 rounded-lg text-[11px] font-bold ${(!purchaseSubTab || purchaseSubTab === 'all') ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}>All Purchase & Suppliers</button>
+              <button type="button" onClick={() => setPurchaseSubTab('suppliers')} className={`px-3 py-2 rounded-lg text-[11px] font-bold ${purchaseSubTab === 'suppliers' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}>Supplier List</button>
+              <button type="button" onClick={() => setPurchaseSubTab('orders')} className={`px-3 py-2 rounded-lg text-[11px] font-bold ${purchaseSubTab === 'orders' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}>Purchase Orders</button>
+              {(isAdminUser || canUpdate('purchase')) && (
+                <button type="button" onClick={() => setPurchaseSubTab('movements')} className={`px-3 py-2 rounded-lg text-[11px] font-bold ${purchaseSubTab === 'movements' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}>
+                  Stock Movement History
+                </button>
+              )}
+            </div>
+
+            {/* Stock Movement History in Purchase tab (shown to user with update role in purchase) */}
+            {purchaseSubTab === 'movements' && (isAdminUser || canUpdate('purchase')) && (
+              <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Stock Movement History</h4>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Purchases, sales deductions, returns, transfers, and inventory adjustments audit.</p>
+                  </div>
+                  <button type="button" onClick={() => {
+                    const tid = (tenantInfo && tenantInfo.id) || '';
+                    const bid = activeBranchId || (currentBranchId !== 'all' ? currentBranchId : '');
+                    const filtered = (stockMovements || []).filter(m => {
+                      if (m.tenantId && tid && m.tenantId !== tid) return false;
+                      if (bid && m.branchId && m.branchId !== bid) return false;
+                      return true;
+                    }).map(m => ({
+                      when: m.at ? new Date(m.at).toLocaleString() : '',
+                      item: m.itemName,
+                      qtyChange: m.qtyChange,
+                      reason: m.reason,
+                      ref: m.ref,
+                      user: m.user
+                    }));
+                    exportRowsAsPdf('Stock Movement History - Purchase', filtered);
+                  }} className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-[10px] font-bold rounded flex items-center gap-1"><Download className="w-3 h-3" /> Download</button>
+                </div>
+                <div className="overflow-x-auto max-h-64">
+                  <table className="w-full text-left text-xs text-slate-300 min-w-[520px]">
+                    <thead className="bg-slate-900 text-slate-400 uppercase text-[10px]"><tr><th className="py-2 px-3">When</th><th className="py-2 px-3">Item</th><th className="py-2 px-3">Qty Δ</th><th className="py-2 px-3">Reason</th><th className="py-2 px-3">Ref</th><th className="py-2 px-3">User</th></tr></thead>
+                    <tbody className="divide-y divide-slate-700">
+                      {(() => {
+                        const tid = (tenantInfo && tenantInfo.id) || '';
+                        const bid = activeBranchId || (currentBranchId !== 'all' ? currentBranchId : '');
+                        const filtered = (stockMovements || []).filter(m => {
+                          if (m.tenantId && tid && m.tenantId !== tid) return false;
+                          if (bid && m.branchId && m.branchId !== bid) return false;
+                          if (bid && !m.branchId) {
+                            if (currentBranchId === 'all') return true;
+                            if ((branches || []).length <= 1) return true;
+                            return false;
+                          }
+                          return true;
+                        });
+                        if (!filtered.length) return <tr><td colSpan={6} className="py-4 text-center text-slate-500">No stock movements logged yet.</td></tr>;
+                        return filtered.slice(0, 100).map(m => (
+                          <tr key={m.id} className="hover:bg-slate-700/40"><td className="py-2 px-3 whitespace-nowrap">{m.at ? new Date(m.at).toLocaleString() : ''}</td><td className="py-2 px-3 font-medium text-white">{m.itemName}</td><td className={`py-2 px-3 font-bold ${(m.qtyChange||0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(m.qtyChange||0) > 0 ? '+' : ''}{m.qtyChange}</td><td className="py-2 px-3">{m.reason}</td><td className="py-2 px-3 font-mono text-[10px] text-slate-400">{m.ref}</td><td className="py-2 px-3 text-slate-300">{m.user}</td></tr>
+                        ));
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             {/* Supplier List — privilege tab: suppliers (located under Purchase like customers under Sales) */}
-            {(isAdminUser || canView('suppliers') || canView('purchase')) && (
+            {(!purchaseSubTab || purchaseSubTab === 'all' || purchaseSubTab === 'suppliers') && (isAdminUser || canView('suppliers') || canView('purchase')) && (
             <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 space-y-4">
               <div className="flex justify-between items-center">
                 <div>
@@ -5532,55 +6940,87 @@ export default function App() {
             )}
 
             {/* Purchase Orders below suppliers */}
-            {(isAdminUser || canView('purchase')) && (
+            {(!purchaseSubTab || purchaseSubTab === 'all' || purchaseSubTab === 'orders') && (isAdminUser || canView('purchase')) && (
             <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 space-y-4">
+              {/* Admin Approval Limit Setting — visible ONLY to users with delete permission in purchase tab */}
               {(isAdminUser || canDelete('purchase')) && (
-                <div className="bg-slate-900 border border-amber-500/30 rounded-xl p-3 space-y-2">
-                  <h4 className="text-xs font-bold text-amber-400 uppercase">Purchase approval limit</h4>
-                  <p className="text-[10px] text-slate-500">Users without Update on Purchase must request approval when PO amount is at or above this limit. Set 0 to disable limit checks. Visible only to Admin / Delete-on-Purchase roles.</p>
-                  <div className="flex flex-wrap items-end gap-2">
-                    <div>
-                      <label className="text-[10px] text-slate-400 block">Limit amount ({shopProfile.currency})</label>
-                      <input type="number" min="0" step="0.01" value={purchaseApprovalLimit} onChange={e => setPurchaseApprovalLimit(e.target.value)} className="bg-slate-950 border border-slate-700 rounded p-2 text-xs text-white w-40" />
-                    </div>
-                    <button type="button" onClick={() => {
-                      const lim = parseFloat(purchaseApprovalLimit) || 0;
-                      setPurchaseApprovalLimit(lim);
-                      saveTenantSettingsPartial({ purchaseApprovalLimit: lim });
-                      alert('Purchase approval limit saved: ' + (lim > 0 ? (shopProfile.currency + ' ' + lim.toLocaleString()) : 'disabled (0)'));
-                    }} className="px-3 py-2 bg-amber-500 text-slate-950 text-xs font-bold rounded">Save limit</button>
+                <div className="bg-slate-900 border border-amber-500/30 rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider">Purchase Order Admin Approval Limit</h4>
+                    <p className="text-[11px] text-slate-400 mt-0.5">Set the maximum PO amount ({shopProfile.currency}) a standard approver can approve alone. Any PO above this limit requires Admin / Purchase Delete permission to approve (set 0 for no limit).</p>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-slate-400 font-semibold">{shopProfile.currency}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="100"
+                      value={poApprovalLimitDraft}
+                      onChange={e => setPoApprovalLimitDraft(e.target.value)}
+                      className="w-32 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-bold tabular-nums"
+                      placeholder="0"
+                    />
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const lim = Math.max(0, parseFloat(poApprovalLimitDraft) || 0);
+                        const res = await apiFetch('/api/tenant-settings', {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ poApprovalLimit: lim })
+                        });
+                        if (!res.ok) {
+                          const d = await res.json().catch(() => ({}));
+                          alert(d.error || 'Failed to save approval limit.');
+                          return;
+                        }
+                        setPoApprovalLimit(lim);
+                        setPoApprovalLimitDraft(String(lim));
+                        logAudit('update', 'po_approval_limit', `Set Purchase Order Admin approval limit to ${shopProfile.currency} ${lim.toLocaleString()}`);
+                        alert(lim > 0 ? `Purchase approval limit saved: POs above ${shopProfile.currency} ${lim.toLocaleString()} now require Admin approval.` : 'Purchase approval limit cleared (no threshold).');
+                      }}
+                      className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg"
+                    >
+                      Save Limit
+                    </button>
                   </div>
                 </div>
               )}
-              {(pendingApprovals || []).filter(a => a.type === 'purchase' || a.type === 'purchase_return' || a.type === 'sales_return').length > 0 && (isAdminUser || canUpdate('purchase') || canUpdate('sales')) && (
-                <div className="bg-slate-900 border border-sky-500/30 rounded-xl p-3 space-y-2">
-                  <h4 className="text-xs font-bold text-sky-400 uppercase">Pending approvals</h4>
-                  {asArr(pendingApprovals).filter(a => a.status === 'pending').map(a => (
-                    <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 text-[11px] border-b border-slate-800 pb-2">
-                      <div>
-                        <span className="text-white font-semibold">{a.type}</span>
-                        <span className="text-slate-400"> · {a.requestedBy || '—'} · {a.summary || a.id}</span>
-                        {a.amount != null && <span className="text-emerald-400"> · {shopProfile.currency} {Number(a.amount).toLocaleString()}</span>}
-                      </div>
-                      <div className="flex gap-1">
-                        <button type="button" className="px-2 py-1 bg-emerald-500 text-slate-950 font-bold rounded text-[10px]" onClick={() => {
-                          const next = asArr(pendingApprovals).map(x => x.id === a.id ? { ...x, status: 'approved', decidedBy: currentUser?.name, decidedAt: new Date().toISOString() } : x);
-                          setPendingApprovals(next);
-                          saveTenantSettingsPartial({ pendingApprovals: next });
-                          logAudit('approve', a.type, a.summary || a.id);
-                          alert('Approved. Requester can proceed when they retry / you process the original action if still open.');
-                        }}>Approve</button>
-                        <button type="button" className="px-2 py-1 bg-red-500/20 text-red-400 font-bold rounded text-[10px]" onClick={() => {
-                          const next = asArr(pendingApprovals).map(x => x.id === a.id ? { ...x, status: 'rejected', decidedBy: currentUser?.name, decidedAt: new Date().toISOString() } : x);
-                          setPendingApprovals(next);
-                          saveTenantSettingsPartial({ pendingApprovals: next });
-                          logAudit('reject', a.type, a.summary || a.id);
-                        }}>Reject</button>
-                      </div>
+
+              {/* Pending Purchase Return Approvals Queue */}
+              {(() => {
+                const pendingPoReturns = (returnRequests || []).filter(r => r.kind === 'purchase' && r.status === 'Pending');
+                if (!pendingPoReturns.length) return null;
+                return (
+                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3.5 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold text-amber-300 uppercase tracking-wider">Pending Purchase Return Requests ({pendingPoReturns.length})</h4>
+                      <span className="text-[10px] text-slate-400">{(isAdminUser || canUpdate('purchase')) ? 'Manager / Admin approval required' : 'Awaiting Manager approval'}</span>
                     </div>
-                  ))}
-                </div>
-              )}
+                    <div className="space-y-1.5">
+                      {pendingPoReturns.map(req => (
+                        <div key={req.id} className="flex flex-wrap items-center justify-between gap-2 bg-slate-900/90 border border-slate-700/80 rounded-lg px-3 py-2 text-xs">
+                          <div>
+                            <span className="font-bold text-white">{req.refId}</span>
+                            <span className="text-slate-400 ml-2">{req.partyName} · {req.summary}</span>
+                            <span className="text-amber-300 font-semibold ml-2 tabular-nums">Est. {shopProfile.currency} {Number(req.estimatedAmount || 0).toLocaleString()}</span>
+                            <span className="block text-[10px] text-slate-400">Requested by {req.requestedBy || 'Staff'} ({req.requestedRole || 'Staff'}) · {req.createdAt ? new Date(req.createdAt).toLocaleString() : ''}{req.reason ? ` · Reason: ${req.reason}` : ''}</span>
+                          </div>
+                          {(isAdminUser || canUpdate('purchase')) ? (
+                            <div className="flex gap-1.5">
+                              <button type="button" onClick={() => handleApproveReturnRequest(req)} className="px-2.5 py-1 bg-emerald-500 text-slate-950 font-bold rounded text-[10px]">Approve & Process</button>
+                              <button type="button" onClick={() => handleRejectReturnRequest(req)} className="px-2.5 py-1 bg-red-500/20 text-red-300 font-bold rounded text-[10px]">Reject</button>
+                            </div>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">Pending Manager</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div className="flex justify-between items-center flex-wrap gap-2">
                 <div>
                   <h3 className="text-lg font-bold text-white">Purchase Orders</h3>
@@ -5596,11 +7036,11 @@ export default function App() {
                 </div>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
-                <select value={poSupplierFilter} onChange={e=>setPoSupplierFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Suppliers</option>{asArr(suppliers).map(v=><option key={v.id} value={v.name}>{v.name}</option>)}</select>
+                <SearchableSelect value={poSupplierFilter} onChange={e=>setPoSupplierFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Suppliers</option>{suppliers.map(v=><option key={v.id} value={v.name}>{v.name}</option>)}</SearchableSelect>
                 <input type="date" aria-label="Purchase order from" value={poDateStart} onChange={e=>setPoDateStart(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white" />
                 <input type="date" aria-label="Purchase order to" value={poDateEnd} onChange={e=>setPoDateEnd(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white" />
-                <select value={poItemFilter} onChange={e=>setPoItemFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Items</option>{asArr(inventory).map(v=><option key={v.id} value={v.name}>{v.name}</option>)}</select>
-                <select value={poStatusFilter} onChange={e=>setPoStatusFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Workflow Statuses</option>{['Draft','Approved','Received','Payment','Purchase Return'].map(v=><option key={v} value={v}>{v === 'Purchase Return' ? 'P. Return' : v}</option>)}</select>
+                <SearchableSelect value={poItemFilter} onChange={e=>setPoItemFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Items</option>{inventory.map(v=><option key={v.id} value={v.name}>{v.name}</option>)}</SearchableSelect>
+                <SearchableSelect value={poStatusFilter} onChange={e=>setPoStatusFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Workflow Statuses</option>{['Draft','Approved','Received','Payment','Purchase Return'].map(v=><option key={v} value={v}>{v === 'Purchase Return' ? 'P. Return' : v}</option>)}</SearchableSelect>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs text-slate-300">
@@ -5627,6 +7067,9 @@ export default function App() {
                     ) : (
                       filterOwn('purchase', branchPurchaseOrders).filter(po => (!poSupplierFilter || po.supplierName===poSupplierFilter) && (!poDateStart || String(po.date||'').slice(0,10)>=poDateStart) && (!poDateEnd || String(po.date||'').slice(0,10)<=poDateEnd) && (!poItemFilter || po.itemName===poItemFilter) && (!poStatusFilter || po.workflowStatus===poStatusFilter)).slice((poPage - 1) * poPerPage, poPage * poPerPage).map((po, idx) => {
                         const absoluteIndex = (poPage - 1) * poPerPage + idx;
+                        const poAmtNum = parseFloat(po.amount) || 0;
+                        const exceedsAdminLimit = (Number(poApprovalLimit) || 0) > 0 && poAmtNum > (Number(poApprovalLimit) || 0);
+                        const canApproveThisPO = exceedsAdminLimit ? (isAdminUser || canDelete('purchase')) : (isAdminUser || canUpdate('purchase'));
                         return (
                           <tr key={po.id} onClick={() => setSelectedPO(po)} className="hover:bg-slate-700/50 cursor-pointer transition-colors">
                             <td className="py-3 px-3 font-mono text-slate-400">{absoluteIndex + 1}</td>
@@ -5650,7 +7093,7 @@ export default function App() {
                             </td>
                             <td className="py-3 px-3 text-sky-400 font-semibold">{po.createdBy || '—'}</td>
                             <td className="py-3 px-3 space-x-1" onClick={e => e.stopPropagation()}>
-                              {po.workflowStatus === 'Draft' && (isAdminUser || canUpdate('purchase')) && (
+                              {po.workflowStatus === 'Draft' && canApproveThisPO && (
                                 <button onClick={async () => {
                                     const amt = parseFloat(po.amount) || 0;
                                     const paid = parseFloat(po.paidAmount) || 0;
@@ -5663,14 +7106,24 @@ export default function App() {
                                       paymentStatus: paid <= 0 ? 'Unpaid' : (paid >= amt ? 'Paid' : 'Partial'),
                                       received: false
                                     };
-                                    await upsertPO(updated);
+                                    const ok = await upsertPO(updated);
+                                    if (ok) logAudit('approve', 'purchase_orders', `Approved ${po.id} (${shopProfile.currency} ${amt.toLocaleString()})`);
                                   }} className="px-2 py-1 bg-blue-500/20 text-blue-400 font-bold rounded text-[10px]">Approve</button>
+                              )}
+                              {po.workflowStatus === 'Draft' && !canApproveThisPO && exceedsAdminLimit && (
+                                <button type="button" onClick={() => {
+                                  logAudit('approval_request', 'purchase_orders', `Requested Admin approval for ${po.id} (${shopProfile.currency} ${poAmtNum.toLocaleString()} exceeds limit ${shopProfile.currency} ${Number(poApprovalLimit).toLocaleString()})`);
+                                  alert(`PO ${po.id} (${shopProfile.currency} ${poAmtNum.toLocaleString()}) exceeds the ${shopProfile.currency} ${Number(poApprovalLimit).toLocaleString()} limit. Admin approval request logged.`);
+                                }} className="px-2 py-1 bg-amber-500/20 text-amber-300 font-bold rounded text-[10px]">
+                                  Seek Admin Approval (&gt;{Number(poApprovalLimit).toLocaleString()})
+                                </button>
                               )}
                               {po.workflowStatus === 'Draft' && (isAdminUser || canDelete('purchase')) && (
                                   <button onClick={async () => {
                                     if (!window.confirm('Are you sure you want to delete this draft purchase order?')) return;
                                     const res = await apiFetch(`/api/purchase_orders/${po.id}`, { method: 'DELETE' });
                                     if (res.ok) {
+                                      logAudit('delete', 'purchase_orders', `${po.id} (${po.supplierName || ''})`);
                                       const gid = po.groupId;
                                       const removedIds = new Set([po.id, ...((purchaseOrders || []).filter(p => gid && p.groupId === gid).map(p => p.id))]);
                                       setPurchaseOrders(purchaseOrders.filter(p => p.id !== po.id && (!gid || p.groupId !== gid)));
@@ -5709,8 +7162,10 @@ export default function App() {
                                   setPoPaymentModalOpen(true);
                                 }} className="px-2 py-1 bg-emerald-500 text-slate-950 font-bold rounded text-[10px]">Pay / Partial</button>
                               )}
-                              {po.workflowStatus !== 'Draft' && po.workflowStatus !== 'Purchase Return' && ((po.quantity || 0) - (po.returnedQty || 0) > 0) && (isAdminUser || canUpdate('purchase')) && (
-                                <button onClick={() => openPurchaseReturn(po)} className="px-2 py-1 bg-amber-500/20 text-amber-400 font-bold rounded text-[10px]">Purchase Return</button>
+                              {po.workflowStatus !== 'Draft' && po.workflowStatus !== 'Purchase Return' && ((po.quantity || 0) - (po.returnedQty || 0) > 0) && (isAdminUser || canUpdate('purchase') || canCreate('purchase') || canView('purchase')) && (
+                                <button onClick={() => openPurchaseReturn(po)} className="px-2 py-1 bg-amber-500/20 text-amber-400 font-bold rounded text-[10px]">
+                                  {(isAdminUser || canUpdate('purchase')) ? 'Purchase Return' : 'Request Return'}
+                                </button>
                               )}
                             </td>
                           </tr>
@@ -5746,8 +7201,8 @@ export default function App() {
 
             {/* New Supplier Modal */}
             {newSupplierModalOpen && (
-              <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-                <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+              <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+                <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
                   <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                     <h4 className="font-bold text-white text-sm">Add New Supplier</h4>
                     <button onClick={() => setNewSupplierModalOpen(false)} className="text-slate-400">✕</button>
@@ -5771,10 +7226,10 @@ export default function App() {
                     </div>
                     <div>
                       <label className="text-slate-400 block mb-1">Credit Terms</label>
-                      <select value={newSupplierForm.creditTermType} onChange={e => setNewSupplierForm({...newSupplierForm, creditTermType: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                      <SearchableSelect value={newSupplierForm.creditTermType} onChange={e => setNewSupplierForm({...newSupplierForm, creditTermType: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                         <option value="COD">COD (Cash on Delivery)</option>
                         <option value="Credit">Credit</option>
-                      </select>
+                      </SearchableSelect>
                     </div>
                     {newSupplierForm.creditTermType === 'Credit' && (
                       <div>
@@ -5790,8 +7245,8 @@ export default function App() {
 
             {/* Supplier Edit Modal */}
             {selectedSupplier && (
-              <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-                <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+              <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+                <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
                   <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                     <h4 className="font-bold text-white text-sm">Edit Supplier: {selectedSupplier.name}</h4>
                     <button onClick={() => setSelectedSupplier(null)} className="text-slate-400">✕</button>
@@ -5809,10 +7264,10 @@ export default function App() {
                     <div><label className="text-slate-400 block mb-1">Location</label><input type="text" value={selectedSupplier.location || ''} onChange={e => setSelectedSupplier({...selectedSupplier, location: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
                     <div>
                       <label className="text-slate-400 block mb-1">Credit Terms</label>
-                      <select value={selectedSupplier.creditTermType} onChange={e => setSelectedSupplier({...selectedSupplier, creditTermType: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                      <SearchableSelect value={selectedSupplier.creditTermType} onChange={e => setSelectedSupplier({...selectedSupplier, creditTermType: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                         <option value="COD">COD</option>
                         <option value="Credit">Credit</option>
-                      </select>
+                      </SearchableSelect>
                     </div>
                     {selectedSupplier.creditTermType === 'Credit' && (
                       <div><label className="text-slate-400 block mb-1">Credit Days</label><input type="number" value={selectedSupplier.creditDays || 0} onChange={e => setSelectedSupplier({...selectedSupplier, creditDays: parseInt(e.target.value) || 0})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
@@ -5825,6 +7280,7 @@ export default function App() {
                         <button type="button" onClick={async () => {
                           if (!window.confirm('Delete supplier?')) return;
                           await apiFetch(`/api/suppliers/${selectedSupplier.id}`, { method: 'DELETE' });
+                          logAudit('delete', 'suppliers', `${selectedSupplier.id} (${selectedSupplier.name || ''})`);
                           setSuppliers(suppliers.filter(s => s.id !== selectedSupplier.id));
                           setSelectedSupplier(null);
                         }} className="py-2 px-4 bg-red-500/20 text-red-400 font-bold rounded">Delete</button>
@@ -5840,8 +7296,8 @@ export default function App() {
 
             {/* New Purchase Order Modal with Dynamic Cost & Amount Calculation */}
             {newPOModalOpen && (
-              <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-                <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+              <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+                <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
                   <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                     <h4 className="font-bold text-white text-sm">Create Purchase Order</h4>
                     <button onClick={() => setNewPOModalOpen(false)} className="text-slate-400">✕</button>
@@ -5878,12 +7334,6 @@ export default function App() {
                     const totalAmount = linePayloads.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
                     const totalTax = linePayloads.reduce((s, l) => s + (parseFloat(l.taxAmount) || 0), 0);
                     const totalQty = linePayloads.reduce((s, l) => s + (parseInt(l.quantity) || 0), 0);
-                    const lim = parseFloat(purchaseApprovalLimit) || 0;
-                    if (lim > 0 && totalAmount >= lim && !(isAdminUser || canUpdate('purchase'))) {
-                      submitPendingApproval('purchase', `PO for ${newPOForm.supplierName || 'supplier'} · ${linePayloads.length} item(s)`, totalAmount, { lines: linePayloads, supplierId: newPOForm.supplierId });
-                      alert('This purchase is at or above the approval limit (' + (shopProfile.currency || '') + ' ' + lim.toLocaleString() + '). An approval request was sent to a manager/admin.');
-                      return;
-                    }
                     const first = linePayloads[0];
                     const po = {
                       id: `PO-${Math.floor(Math.random() * 8999 + 1000)}`,
@@ -5916,14 +7366,14 @@ export default function App() {
                   }} className="space-y-3 text-xs">
                     <div>
                       <label className="text-slate-400 block mb-1">Select Supplier *</label>
-                      <select value={newPOForm.supplierId} onChange={e => {
+                      <SearchableSelect value={newPOForm.supplierId} onChange={e => {
                         const supId = e.target.value;
                         const sup = suppliers.find(s => s.id === supId);
                         setNewPOForm({...newPOForm, supplierId: supId, supplierName: sup ? sup.name : ''});
                       }} required className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                         <option value="">-- Choose Supplier --</option>
-                        {asArr(suppliers).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                      </select>
+                        {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </SearchableSelect>
                     </div>
                     <div className="space-y-2 border border-slate-700 rounded-lg p-2">
                       <div className="flex items-center justify-between">
@@ -5934,7 +7384,7 @@ export default function App() {
                         <div key={idx} className="grid grid-cols-12 gap-1 items-end">
                           <div className="col-span-5">
                             <label className="text-[9px] text-slate-500">Item</label>
-                            <select value={line.itemId || ''} onChange={e => {
+                            <SearchableSelect value={line.itemId || ''} onChange={e => {
                               const itemId = e.target.value;
                               const invItem = (inventory || []).find(i => i.id === itemId);
                               const lines = [...(poLines || [])];
@@ -5951,7 +7401,7 @@ export default function App() {
                             }} className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-white text-[11px]">
                               <option value="">-- Item --</option>
                               {(inventory || []).map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
-                            </select>
+                            </SearchableSelect>
                           </div>
                           <div className="col-span-2">
                             <label className="text-[9px] text-slate-500">Qty</label>
@@ -6024,8 +7474,8 @@ export default function App() {
             {/* Partial / Full Payment Modal */}
             
             {selectedPO && !poPaymentModalOpen && !purchaseReturnModalOpen && (
-              <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-                <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+              <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+                <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
                   <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                     <h4 className="font-bold text-white text-sm">Purchase Order {selectedPO.id}</h4>
                     <button onClick={() => setSelectedPO(null)} className="text-slate-400">✕</button>
@@ -6114,20 +7564,17 @@ export default function App() {
                           hist = paid > 0 ? [{ date: selectedPO.date, amount: paid, paymentMethod: selectedPO.paymentMethod || '—', mpesaCode: selectedPO.mpesaCode || '' }] : [];
                         }
                         if (!hist.length) return <p className="text-[10px] text-slate-500">No payments recorded yet.</p>;
-                  return (
-                    <div className="space-y-1 max-h-40 overflow-y-auto">
-                      {hist.map((p, idx) => {
-                        const row = formatPaymentHistoryEntry(p);
-                        return (
-                          <div key={p.id || idx} className="text-[11px] border-b border-slate-800 pb-1.5 space-y-0.5">
-                            <div className="text-slate-400">{row.when}</div>
-                            <div className="text-white font-medium">{row.methodPart}{row.txn ? <span className="text-sky-400"> {row.txn}</span> : null}{row.amt ? <span className="text-emerald-400"> {row.amt}</span> : null}</div>
+                        return hist.map((p, idx) => (
+                          <div key={p.id || idx} className="flex flex-wrap justify-between gap-1 text-[11px] border-b border-slate-800 pb-1">
+                            <span className="text-slate-400">{p.date ? new Date(p.date).toLocaleString() : '—'}</span>
+                            <span className="text-white">{p.paymentMethod || p.method || '—'}</span>
+                            {(String(p.paymentMethod || p.method || '').toLowerCase().includes('m-pesa') || p.mpesaCode) && (
+                              <span className="text-sky-400 font-mono">TXN {p.mpesaCode || p.txnNo || '—'}</span>
+                            )}
+                            <span className="text-emerald-400 font-bold">{shopProfile.currency} {Number(p.amount || 0).toLocaleString()}</span>
                           </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })()}
+                        ));
+                      })()}
                     </div>
                     <div className="flex gap-2 pt-2">
                       {(isAdminUser || canUpdate('purchase')) && (
@@ -6145,6 +7592,7 @@ export default function App() {
                         <button type="button" onClick={async () => {
                           if (!window.confirm(`Delete purchase order ${selectedPO.id}? This cannot be undone.`)) return;
                           try { await apiFetch(`/api/purchase_orders/${selectedPO.id}`, { method: 'DELETE' }); } catch (e) {}
+                          logAudit('delete', 'purchase_orders', `${selectedPO.id} (${selectedPO.supplierName || ''})`);
                           setPurchaseOrders(prev => {
                             const next = prev.filter(p => p.id !== selectedPO.id);
                             return next;
@@ -6160,8 +7608,8 @@ export default function App() {
             )}
 
             {poPaymentModalOpen && selectedPO && (
-              <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-                <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+              <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+                <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
                   <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                     <h4 className="font-bold text-white text-sm">Make Payment for PO: {selectedPO.id}</h4>
                     <button onClick={() => setPoPaymentModalOpen(false)} className="text-slate-400">✕</button>
@@ -6172,35 +7620,51 @@ export default function App() {
                     const outstanding = Math.max(0, Number(selectedPO.balanceDue) || 0);
                     if (payAmt <= 0) { alert('Enter a payment amount greater than zero.'); return; }
                     if (payAmt > outstanding) { alert(`Payment cannot exceed the outstanding balance of ${shopProfile.currency} ${outstanding.toLocaleString()}.`); return; }
-                    const newPaid = (Number(selectedPO.paidAmount) || 0) + payAmt;
+                    const prevPaid = Number(selectedPO.paidAmount) || 0;
+                    const newPaid = prevPaid + payAmt;
                     const newBalance = Math.max(0, outstanding - payAmt);
                     const newStatus = newBalance === 0 ? 'Paid' : 'Partial';
-                    const paymentRecord = { id: `popay-${Date.now()}`, date: new Date().toISOString(), amount: payAmt, paymentMethod: poPaymentForm.paymentMethod, mpesaCode: String(poPaymentForm.paymentMethod||'').toLowerCase().includes('m-pesa') ? (poPaymentForm.mpesaCode || '') : (selectedPO.mpesaCode || ''), recordedBy: currentUser?.name || 'Staff' };
+                    let existingHist = selectedPO.paymentHistory;
+                    try { if (typeof existingHist === 'string') existingHist = JSON.parse(existingHist || '[]'); } catch (_) { existingHist = []; }
+                    if (!Array.isArray(existingHist)) existingHist = [];
+                    if (existingHist.length === 0 && prevPaid > 0) {
+                      existingHist = [{
+                        id: `popay-init-${selectedPO.id}`,
+                        date: selectedPO.date,
+                        amount: prevPaid,
+                        paymentMethod: selectedPO.paymentMethod || 'Cash',
+                        mpesaCode: selectedPO.mpesaCode || ''
+                      }];
+                    }
+                    const paymentRecord = { id: `popay-${Date.now()}`, date: new Date().toISOString(), amount: payAmt, paymentMethod: poPaymentForm.paymentMethod, mpesaCode: String(poPaymentForm.paymentMethod||'').toLowerCase().includes('m-pesa') ? (poPaymentForm.mpesaCode || '') : '', recordedBy: currentUser?.name || 'Staff' };
                     const updated = {
                       ...selectedPO,
                       paidAmount: newPaid,
                       balanceDue: newBalance,
                       paymentMethod: selectedPO.paymentMethod && selectedPO.paymentMethod !== poPaymentForm.paymentMethod ? `${selectedPO.paymentMethod} + ${poPaymentForm.paymentMethod}` : poPaymentForm.paymentMethod,
                       paymentStatus: newStatus,
-                      paymentHistory: [...(selectedPO.paymentHistory || []), paymentRecord],
+                      paymentHistory: [...existingHist, paymentRecord],
                       mpesaCode: String(poPaymentForm.paymentMethod||'').toLowerCase().includes('m-pesa') ? (poPaymentForm.mpesaCode || selectedPO.mpesaCode || '') : (selectedPO.mpesaCode || ''),
                       workflowStatus: selectedPO.workflowStatus === 'Draft' ? selectedPO.workflowStatus : 'Payment'
                     };
-                    await upsertPO(updated);
-                    setPaymentMethods(prev => {
-                      const next = prev.map(pm => (pm.name || '').toLowerCase() === poPaymentForm.paymentMethod.toLowerCase() ? { ...pm, startingBalance: Math.max(0, (Number(pm.startingBalance) || 0) - payAmt) } : pm);
-                      return next;
-                    });
+                    const ok = await upsertPO(updated);
+                    if (ok) {
+                      logAudit('payment', 'purchase_orders', `${selectedPO.id} · ${shopProfile.currency} ${payAmt} via ${poPaymentForm.paymentMethod}`);
+                      setPaymentMethods(prev => {
+                        const next = prev.map(pm => (pm.name || '').toLowerCase() === poPaymentForm.paymentMethod.toLowerCase() ? { ...pm, startingBalance: Math.max(0, (Number(pm.startingBalance) || 0) - payAmt) } : pm);
+                        return next;
+                      });
+                    }
                     setPoPaymentModalOpen(false);
                     setSelectedPO(null);
                   }} className="space-y-3 text-xs">
                     <div>
                       <label className="text-slate-400 block mb-1">Payment Method</label>
-                      <select value={poPaymentForm.paymentMethod} onChange={e => setPoPaymentForm({...poPaymentForm, paymentMethod: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                      <SearchableSelect value={poPaymentForm.paymentMethod} onChange={e => setPoPaymentForm({...poPaymentForm, paymentMethod: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                         <option value="Cash">Cash</option>
                         <option value="M-Pesa">M-Pesa</option>
                         <option value="Bank Transfer">Bank Transfer Account</option>
-                      </select>
+                      </SearchableSelect>
                     </div>
                     {String(poPaymentForm.paymentMethod||'').toLowerCase().includes('m-pesa') && (
                       <div>
@@ -6255,12 +7719,22 @@ export default function App() {
                     paidAmount: paidFinal,
                     balanceDue: balDue,
                     paymentStatus: payStatus,
+                    paymentHistory: paidFinal > 0 ? [{
+                      id: `exppay-${Date.now()}`,
+                      date: new Date().toISOString(),
+                      amount: paidFinal,
+                      paymentMethod: newExpense.paymentMethod || 'Cash',
+                      mpesaCode: String(newExpense.paymentMethod || '').toLowerCase().includes('m-pesa') ? (newExpense.mpesaCode || '') : ''
+                    }] : [],
                     subtotal: baseAmt,
                     taxAmount: Math.round(taxAmt * 100) / 100,
                     taxRate: expenseApplyTax ? (taxSettings.expenseTaxRate ?? taxSettings.purchaseTaxRate) : 0,
                     taxName: expenseApplyTax ? (taxSettings.expenseTaxName || 'Expense VAT') : (taxSettings.purchaseTaxName || 'VAT')
                   };
                   persistExpenses([exp, ...expenses]);
+                  if (paidFinal > 0) {
+                    logAudit('payment', 'expense', `${exp.id} · ${shopProfile.currency} ${paidFinal} via ${newExpense.paymentMethod || 'Cash'} (${newExpense.description || ''})`);
+                  }
                   setNewExpense({ date: new Date().toISOString().split('T')[0], category: expenseCategories[0]?.name || 'Store Rent', description: '', amount: '', paidAmount: '', paymentMethod: 'Cash', mpesaCode: '', payer: '', paidTo: '' });
                   try {
                     await apiFetch('/api/expenses', {
@@ -6278,11 +7752,11 @@ export default function App() {
                   </div>
                   <div>
                     <label className="text-[10px] text-slate-400 block mb-1">Expense Category:</label>
-                    <select value={newExpense.category} onChange={e => setNewExpense({...newExpense, category: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                    <SearchableSelect value={newExpense.category} onChange={e => setNewExpense({...newExpense, category: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                       {(expenseCategories || []).filter(ec => ec.status !== 'Inactive').map(ec => (
                         <option key={ec.id} value={ec.name}>{ec.name}</option>
                       ))}
-                    </select>
+                    </SearchableSelect>
                   </div>
                   <div>
                     <label className="text-[10px] text-slate-400 block mb-1">Description:</label>
@@ -6304,9 +7778,9 @@ export default function App() {
                   </div>
                   <div>
                     <label className="text-[10px] text-slate-400 block mb-1">Payment Method:</label>
-                    <select value={newExpense.paymentMethod} onChange={e => setNewExpense({...newExpense, paymentMethod: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                    <SearchableSelect value={newExpense.paymentMethod} onChange={e => setNewExpense({...newExpense, paymentMethod: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                       {(paymentMethods || [{name:'Cash'},{name:'M-Pesa'}]).map(pm => <option key={pm.id||pm.name} value={pm.name}>{pm.name}</option>)}
-                    </select>
+                    </SearchableSelect>
                   </div>
                   {String(newExpense.paymentMethod||'').toLowerCase().includes('m-pesa') && (
                     <div>
@@ -6354,13 +7828,13 @@ export default function App() {
                   <p className="text-[11px] text-slate-400 mt-0.5">Filter by date timeframe, payer, or paid to, and click any expense description to edit.</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <select value={expenseTimeframe} onChange={e => setExpenseTimeframe(e.target.value)} className="bg-slate-900 border border-slate-700 text-xs text-emerald-400 font-semibold rounded px-2.5 py-1.5">
+                  <SearchableSelect value={expenseTimeframe} onChange={e => setExpenseTimeframe(e.target.value)} className="bg-slate-900 border border-slate-700 text-xs text-emerald-400 font-semibold rounded px-2.5 py-1.5">
                     <option value="all">All Dates</option>
                     <option value="today">Today</option>
                     <option value="this_week">This Week</option>
                     <option value="this_month">This Month</option>
                     <option value="custom">Custom Date Range</option>
-                  </select>
+                  </SearchableSelect>
                   {expenseTimeframe === 'custom' && (
                     <div className="flex items-center gap-1">
                       <input type="date" value={expenseCustomStartDate} onChange={e => setExpenseCustomStartDate(e.target.value)} className="bg-slate-900 border border-slate-700 rounded text-xs px-2 py-1 text-white" />
@@ -6423,8 +7897,8 @@ export default function App() {
           <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 space-y-4">
             <h3 className="text-sm font-bold text-white">Pending Credit & Layby Orders</h3>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <select value={laybyCustomerFilter} onChange={e=>setLaybyCustomerFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Customers</option>{(Array.isArray(customers) ? customers : []).map(c=><option key={c.id} value={c.name}>{c.name}</option>)}</select>
-              <select value={laybyTypeFilter} onChange={e=>setLaybyTypeFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Types</option>{['Credit','Layby','Paid'].map(v=><option key={v}>{v}</option>)}</select>
+              <SearchableSelect value={laybyCustomerFilter} onChange={e=>setLaybyCustomerFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Customers</option>{customers.map(c=><option key={c.id} value={c.name}>{c.name}</option>)}</SearchableSelect>
+              <SearchableSelect value={laybyTypeFilter} onChange={e=>setLaybyTypeFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Types</option>{['Credit','Layby','Paid'].map(v=><option key={v}>{v}</option>)}</SearchableSelect>
               <input type="date" aria-label="Deadline" value={laybyDeadlineFilter} onChange={e=>setLaybyDeadlineFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white" />
             </div>
             <div className="overflow-x-auto">
@@ -6496,9 +7970,9 @@ export default function App() {
                 <div className="flex justify-between items-center">
                   <p className="text-xs text-slate-400">{employees.length} employee(s) registered</p>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 w-full max-w-2xl">
-                    <select value={employeePositionFilter} onChange={e=>setEmployeePositionFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Positions</option>{[...new Set(employees.map(e=>e.position).filter(Boolean))].map(v=><option key={v}>{v}</option>)}</select>
-                    <select value={employeeDepartmentFilter} onChange={e=>setEmployeeDepartmentFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Departments</option>{[...new Set(employees.map(e=>e.department).filter(Boolean))].map(v=><option key={v}>{v}</option>)}</select>
-                    <select value={employeeManagerFilter} onChange={e=>setEmployeeManagerFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Report To</option>{asArr(employees).map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</select>
+                    <SearchableSelect value={employeePositionFilter} onChange={e=>setEmployeePositionFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Positions</option>{[...new Set(employees.map(e=>e.position).filter(Boolean))].map(v=><option key={v}>{v}</option>)}</SearchableSelect>
+                    <SearchableSelect value={employeeDepartmentFilter} onChange={e=>setEmployeeDepartmentFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Departments</option>{[...new Set(employees.map(e=>e.department).filter(Boolean))].map(v=><option key={v}>{v}</option>)}</SearchableSelect>
+                    <SearchableSelect value={employeeManagerFilter} onChange={e=>setEmployeeManagerFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Report To</option>{employees.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</SearchableSelect>
                   </div>
                   {(isAdminUser || canCreate('employees')) && (
                     <button onClick={() => { setSelectedEmployee(null); setEmployeeForm({ name: '', position: '', department: (hrSettings.departments && hrSettings.departments[0]) || 'Sales', phone: '', email: '', hireDate: new Date().toISOString().split('T')[0], salary: '', status: 'Active', nationalId: '', bankAccount: '', bankName: '', leaveBalance: hrSettings.defaultAnnualLeave || 21, managerId: '' }); setEmployeeModalOpen(true); }} className="px-3 py-2 bg-emerald-500 text-slate-950 text-xs font-bold rounded flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> Add Employee</button>
@@ -6653,8 +8127,8 @@ export default function App() {
                 <div className="flex flex-wrap justify-between items-center gap-2">
                   <p className="text-xs text-slate-400">Leave requests & balances</p>
                   <div className="flex flex-wrap gap-2 items-center">
-                    <select value={leaveStatusFilter} onChange={e=>setLeaveStatusFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Leave Statuses</option>{['Pending','Approved','Rejected'].map(v=><option key={v}>{v}</option>)}</select>
-                    <select value={leaveApproverFilter} onChange={e=>setLeaveApproverFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Approvers</option>{asArr(employees).map(e=><option key={e.id} value={e.name}>{e.name}</option>)}</select>
+                    <SearchableSelect value={leaveStatusFilter} onChange={e=>setLeaveStatusFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Leave Statuses</option>{['Pending','Approved','Rejected'].map(v=><option key={v}>{v}</option>)}</SearchableSelect>
+                    <SearchableSelect value={leaveApproverFilter} onChange={e=>setLeaveApproverFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white"><option value="">All Approvers</option>{employees.map(e=><option key={e.id} value={e.name}>{e.name}</option>)}</SearchableSelect>
                     {(isAdminUser || canCreate('hr')) && (
                       <button onClick={() => { setLeaveForm({ employeeId: (isAdminUser || canUpdate('hr') || canUpdate('employees')) ? '' : (currentEmployeeRecord?.id || ''), leaveType: (hrSettings.leaveTypes||[])[0] || 'Annual', startDate: '', endDate: '', reason: '' }); setLeaveModalOpen(true); }} className="px-3 py-2 bg-emerald-500 text-slate-950 text-xs font-bold rounded flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> New Leave Request</button>
                     )}
@@ -6758,9 +8232,9 @@ export default function App() {
                           <td className="py-2 px-3" onClick={e => e.stopPropagation()}>
                             {pr.status !== 'Paid' && (isAdminUser || canUpdate('payroll')) && (
                               <>
-                                <select value={payrollPayMethod} onChange={e => setPayrollPayMethod(e.target.value)} onClick={e => e.stopPropagation()} className="bg-slate-900 border border-slate-700 rounded text-[10px] text-white mr-1 py-0.5">
-                                  {asArr(paymentMethods).map(pm => <option key={pm.id} value={pm.name}>{pm.name}</option>)}
-                                </select>
+                                <SearchableSelect value={payrollPayMethod} onChange={e => setPayrollPayMethod(e.target.value)} onClick={e => e.stopPropagation()} className="bg-slate-900 border border-slate-700 rounded text-[10px] text-white mr-1 py-0.5">
+                                  {paymentMethods.map(pm => <option key={pm.id} value={pm.name}>{pm.name}</option>)}
+                                </SearchableSelect>
                                 <button onClick={() => handleMarkPayrollPaid(pr, payrollPayMethod)} className="px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded text-[10px] font-bold mr-1">Mark Paid</button>
                               </>
                             )}
@@ -6783,7 +8257,7 @@ export default function App() {
           </div>
         )}
 
-        {activeTab === 'reports' && (isAdminUser || privileges.reports?.view || privileges.reportSales?.view || privileges.reportPurchase?.view || privileges.reportExpense?.view || privileges.reportHr?.view || privileges.reportCustomer?.view || privileges.reportInventory?.view || privileges.reportAging?.view || privileges.reportFinancial?.view || privileges.reportLedger?.view) && (
+        {activeTab === 'reports' && (isAdminUser || privileges.reports?.view || privileges.reportSales?.view || privileges.reportPurchase?.view || privileges.reportExpense?.view || privileges.reportHr?.view || privileges.reportCustomer?.view) && (
           <div className="space-y-6">
             {/* Header Control Panel — filters always available; title+KPIs follow Comprehensive privilege */}
             <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 space-y-4">
@@ -6799,13 +8273,13 @@ export default function App() {
                 </div>
                 )}
                 <div className="flex flex-wrap items-center gap-2">
-                  <select value={reportTimeframe} onChange={e => setReportTimeframe(e.target.value)} className="bg-slate-900 border border-slate-700 text-xs rounded px-3 py-2 text-white">
+                  <SearchableSelect value={reportTimeframe} onChange={e => setReportTimeframe(e.target.value)} className="bg-slate-900 border border-slate-700 text-xs rounded px-3 py-2 text-white">
                     <option value="all">All Dates (Default)</option>
                     <option value="today">Today</option>
                     <option value="this_week">This Week</option>
                     <option value="this_month">This Month</option>
                     <option value="custom">Custom Date Range</option>
-                  </select>
+                  </SearchableSelect>
                   {reportTimeframe === 'custom' && (
                     <div className="flex items-center gap-1">
                       <input type="date" value={reportStartDate} onChange={e => setReportStartDate(e.target.value)} className="bg-slate-900 border border-slate-700 rounded text-xs px-2 py-1 text-white" />
@@ -6813,12 +8287,12 @@ export default function App() {
                       <input type="date" value={reportEndDate} onChange={e => setReportEndDate(e.target.value)} className="bg-slate-900 border border-slate-700 rounded text-xs px-2 py-1 text-white" />
                     </div>
                   )}
-                  <select value={reportTypeFilter} onChange={e => setReportTypeFilter(e.target.value)} className="bg-slate-900 border border-slate-700 text-xs rounded px-3 py-2 text-emerald-400 font-semibold">
+                  <SearchableSelect value={reportTypeFilter} onChange={e => setReportTypeFilter(e.target.value)} className="bg-slate-900 border border-slate-700 text-xs rounded px-3 py-2 text-emerald-400 font-semibold">
                     <option value="all">All Sale Types</option>
                     <option value="Paid">Paid Only</option>
                     <option value="Credit">Credit Only</option>
                     <option value="Layby">Layby Only</option>
-                  </select>
+                  </SearchableSelect>
                   <button onClick={() => window.print()} className="px-3 py-2 bg-emerald-500 text-slate-950 font-bold rounded text-xs flex items-center gap-1">
                     <Download className="w-3.5 h-3.5" /> Print / Export
                   </button>
@@ -7073,7 +8547,7 @@ export default function App() {
                   </div>
               </div>
 
-              <div className={`bg-slate-800 p-5 rounded-xl border border-slate-700 ${canViewReportSection('reportSalesByLocation') ? '' : 'hidden'}`}>
+              <div className="bg-slate-800 p-5 rounded-xl border border-slate-700">
                 <h4 className="font-bold text-white text-xs mb-3 border-b border-slate-700 pb-2">📍 Sales by Location</h4>
                 <p className="text-[10px] text-slate-500 mb-2">Revenue, COGS and profit margin per location for the selected report period.</p>
                 <div className="overflow-x-auto">
@@ -7449,14 +8923,14 @@ export default function App() {
                   </>
                 )}
                 
-                {effectiveReportSubTab === 'inventory' && (
+                {effectiveReportSubTab === 'inventory' && canViewReportSection('reportInventory') && (
                   <>
             <div className="space-y-4">
               <h3 className="text-base font-bold text-white border-b border-slate-700 pb-2">Inventory Report</h3>
               <p className="text-[10px] text-slate-500">Uses the same report timeframe and location filters as other report tabs.</p>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className={`bg-slate-800 p-4 rounded-xl border border-slate-700 ${canViewReportSection('reportInventoryValuation') ? '' : 'hidden'}`}>
+                <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
                   <h4 className="font-bold text-white text-xs mb-2 border-b border-slate-700 pb-2">Inventory Valuation</h4>
                   <p className="text-2xl font-bold text-emerald-400">{shopProfile.currency} {Number(inventoryValuationTotal||0).toLocaleString()}</p>
                   <p className="text-[10px] text-slate-500 mt-1">{(inventoryValuationRows||[]).length} items · qty × buying price</p>
@@ -7466,7 +8940,7 @@ export default function App() {
                     ))}
                   </div>
                 </div>
-                <div className={`bg-slate-800 p-4 rounded-xl border border-slate-700 ${canViewReportSection('reportInventoryDeadStock') ? '' : 'hidden'}`}>
+                <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
                   <h4 className="font-bold text-white text-xs mb-2 border-b border-slate-700 pb-2">Dead Stock</h4>
                   <p className="text-[10px] text-slate-500 mb-2">Tracked items with no sales in the selected period.</p>
                   <div className="max-h-44 overflow-y-auto text-[11px] space-y-1">
@@ -7475,7 +8949,7 @@ export default function App() {
                     ))}
                   </div>
                 </div>
-                <div className={`bg-slate-800 p-4 rounded-xl border border-slate-700 ${canViewReportSection('reportInventoryLowStock') ? '' : 'hidden'}`}>
+                <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
                   <h4 className="font-bold text-white text-xs mb-2 border-b border-slate-700 pb-2">Low Stock Alerts</h4>
                   <p className="text-[10px] text-slate-500 mb-2">View only — not clickable for restock.</p>
                   <div className="max-h-44 overflow-y-auto text-[11px] space-y-1">
@@ -7487,7 +8961,7 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className={`bg-slate-800 p-4 rounded-xl border border-slate-700 md:col-span-1 ${canViewReportSection('reportInventoryBalance') ? '' : 'hidden'}`}>
+                <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 md:col-span-1">
                   <h4 className="font-bold text-white text-xs mb-2 border-b border-slate-700 pb-2">Stock Balance</h4>
                   <div className="max-h-52 overflow-y-auto text-[11px]">
                     <table className="w-full text-left"><thead className="text-slate-400 text-[10px]"><tr><th className="py-1">Item</th><th className="py-1 text-right">Qty</th></tr></thead>
@@ -7496,7 +8970,7 @@ export default function App() {
                     ))}</tbody></table>
                   </div>
                 </div>
-                <div className={`bg-slate-800 p-4 rounded-xl border border-slate-700 md:col-span-2 ${canViewReportSection('reportInventoryBranch') ? '' : 'hidden'}`}>
+                <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 md:col-span-2">
                   <h4 className="font-bold text-white text-xs mb-2 border-b border-slate-700 pb-2">Stock Valuation by Branch</h4>
                   <div className="overflow-x-auto">
                     <table className="w-full text-left text-xs text-slate-300">
@@ -7511,7 +8985,7 @@ export default function App() {
                     </table>
                   </div>
                 </div>
-                <div className={`bg-slate-800 p-4 rounded-xl border border-slate-700 md:col-span-3 ${canViewReportSection('reportInventoryValuation') ? '' : 'hidden'}`}>
+                <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 md:col-span-3">
                   <h4 className="font-bold text-white text-xs mb-2 border-b border-slate-700 pb-2">Full Inventory Valuation Detail</h4>
                   <div className="overflow-x-auto max-h-64">
                     <table className="w-full text-left text-xs text-slate-300">
@@ -7540,10 +9014,10 @@ export default function App() {
                     <h4 className="font-bold text-white text-xs uppercase tracking-wider">👤 Customer Account Statement Report</h4>
                     <p className="text-[11px] text-slate-400 mt-0.5">Select a customer to view their complete order statement, payment records, and balances.</p>
                   </div>
-                  <select value={reportStatementCustomer} onChange={e => setReportStatementCustomer(e.target.value)} className="bg-slate-900 border border-slate-700 text-xs rounded px-3 py-2 text-emerald-400 font-bold">
+                  <SearchableSelect value={reportStatementCustomer} onChange={e => setReportStatementCustomer(e.target.value)} className="bg-slate-900 border border-slate-700 text-xs rounded px-3 py-2 text-emerald-400 font-bold">
                     <option value="">-- Choose Customer Statement --</option>
-                    {asArr(customers).map(c => <option key={c.id} value={c.name}>{c.name} ({c.location})</option>)}
-                  </select>
+                    {(customers || []).map(c => <option key={c.id} value={c.name}>{c.name} ({c.location})</option>)}
+                  </SearchableSelect>
                 </div>
 
                 {reportStatementCustomer ? (
@@ -7618,7 +9092,7 @@ export default function App() {
                 )}
 
 
-                {effectiveReportSubTab === 'aging' && (isAdminUser || privileges.reportAging?.view || privileges.reports?.view) && (
+                {effectiveReportSubTab === 'aging' && canViewReportSection('reportAging') && (
                   <div className="space-y-4">
                     <h3 className="text-base font-bold text-white border-b border-slate-700 pb-2">Aging Report</h3>
                     <p className="text-[10px] text-slate-500">Unpaid balances by age (from deadline or document date). Read-only — does not change balances.</p>
@@ -7664,7 +9138,7 @@ export default function App() {
                   </div>
                 )}
 
-                {effectiveReportSubTab === 'financial' && (isAdminUser || privileges.reportFinancial?.view || privileges.reports?.view) && (
+                {effectiveReportSubTab === 'financial' && canViewReportSection('reportFinancial') && (
                   <div className="space-y-4">
                     <h3 className="text-base font-bold text-white border-b border-slate-700 pb-2">Financial Reports</h3>
                     <p className="text-[10px] text-slate-500">Ledger- and transaction-based statements from the database. Choose a report, set filters, then Run.</p>
@@ -7707,7 +9181,7 @@ export default function App() {
                       {['sales-revenue','gross-profit','expense-analysis'].includes(finReportTab) && (
                         <div>
                           <label className="text-slate-500 text-[10px] block">Group by</label>
-                          <select value={finGroupBy} onChange={e => setFinGroupBy(e.target.value)} className="bg-slate-950 border border-slate-700 rounded p-1.5 text-white">
+                          <SearchableSelect value={finGroupBy} onChange={e => setFinGroupBy(e.target.value)} className="bg-slate-950 border border-slate-700 rounded p-1.5 text-white">
                             {finReportTab === 'expense-analysis' ? (
                               <><option value="category">Category</option><option value="supplier">Payee / Supplier</option><option value="date">Date</option><option value="month">Month</option><option value="branch">Branch</option></>
                             ) : finReportTab === 'sales-revenue' ? (
@@ -7715,16 +9189,16 @@ export default function App() {
                             ) : (
                               <><option value="item">Item</option><option value="category">Category</option><option value="branch">Branch</option><option value="month">Month</option><option value="day">Day</option></>
                             )}
-                          </select>
+                          </SearchableSelect>
                         </div>
                       )}
                       {['sales-revenue','gross-profit','expense-analysis','chart-of-accounts','tax-summary'].includes(finReportTab) && (
                         <div>
                           <label className="text-slate-500 text-[10px] block">Branch</label>
-                          <select value={finBranchId} onChange={e => setFinBranchId(e.target.value)} className="bg-slate-950 border border-slate-700 rounded p-1.5 text-white">
+                          <SearchableSelect value={finBranchId} onChange={e => setFinBranchId(e.target.value)} className="bg-slate-950 border border-slate-700 rounded p-1.5 text-white">
                             <option value="">All locations</option>
-                            {asArr(branches).map(b => <option key={b.id} value={b.id}>{b.name || b.id}</option>)}
-                          </select>
+                            {(branches || []).map(b => <option key={b.id} value={b.id}>{b.name || b.id}</option>)}
+                          </SearchableSelect>
                         </div>
                       )}
                       {finReportTab === 'comparative' && (
@@ -7977,7 +9451,7 @@ export default function App() {
                   </div>
                 )}
 
-                {effectiveReportSubTab === 'ledger' && (isAdminUser || privileges.reportLedger?.view || privileges.reports?.view) && (
+                {effectiveReportSubTab === 'ledger' && canViewReportSection('reportLedger') && (
                   <div className="bg-slate-900 p-5 rounded-xl border border-slate-700 space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
                       <div>
@@ -8177,11 +9651,67 @@ export default function App() {
                 {settingsSubTab === 'profile' && (
                   <>
 {/* Top Box: Business Profile Setup */}
-            <div className="bg-slate-900 p-5 rounded-xl border border-emerald-500/30 space-y-3">
-              <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
-                <Building className="w-4 h-4 text-emerald-400" />
-                <h4 className="text-xs font-bold text-white uppercase tracking-wider">Business Profile Setup</h4>
+            <div className="bg-slate-900 p-5 rounded-xl border border-emerald-500/30 space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                <div className="flex items-center gap-2">
+                  <Building className="w-4 h-4 text-emerald-400" />
+                  <h4 className="text-xs font-bold text-white uppercase tracking-wider">Business Profile Setup</h4>
+                </div>
+                <span className="text-[10px] text-slate-400">Printed on receipts, invoices & payslips</span>
               </div>
+
+              {/* Business Logo Upload Section */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    {shopProfile.logo ? (
+                      <div className="bg-white/5 p-2 rounded-lg border border-slate-700 flex items-center justify-center h-16 w-24 shrink-0">
+                        <img src={shopProfile.logo} alt="Business Logo" className="max-h-12 max-w-[80px] object-contain" />
+                      </div>
+                    ) : (
+                      <div className="h-16 w-24 rounded-lg border-2 border-dashed border-slate-700 flex flex-col items-center justify-center text-slate-500 bg-slate-900/50 shrink-0">
+                        <Building className="w-5 h-5 mb-1 text-slate-600" />
+                        <span className="text-[9px]">No Logo</span>
+                      </div>
+                    )}
+                    <div>
+                      <label className="text-xs font-semibold text-white block">Business Logo</label>
+                      <p className="text-[10px] text-slate-400">Visible on printed receipts, invoices & documents. Automatically compressed into database.</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="cursor-pointer px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded text-xs flex items-center gap-1.5 transition-colors">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>{shopProfile.logo ? 'Change Logo' : 'Upload Logo'}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          try {
+                            const compressed = await compressLogoImage(file);
+                            setShopProfile(prev => ({ ...prev, logo: compressed }));
+                          } catch (err) {
+                            alert('Could not process image: ' + (err.message || 'unknown error'));
+                          }
+                        }}
+                      />
+                    </label>
+                    {shopProfile.logo && (
+                      <button
+                        type="button"
+                        onClick={() => setShopProfile(prev => ({ ...prev, logo: '' }))}
+                        className="px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded text-xs font-semibold"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                 <div>
                   <label className="text-slate-400 block mb-1">Shop Name</label>
@@ -8204,7 +9734,7 @@ export default function App() {
                   <input type="text" value={shopProfile.location} onChange={e => setShopProfile({...shopProfile, location: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" />
                 </div>
               </div>
-              <button onClick={handleSaveShopProfile} className="px-4 py-2 bg-emerald-500 text-slate-950 font-bold rounded text-xs">Save Business Profile</button>
+              <button onClick={handleSaveShopProfile} className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded text-xs transition-colors">Save Business Profile</button>
             </div>
                   </>
                 )}
@@ -8232,7 +9762,7 @@ export default function App() {
                       </div>
                       <div className="space-y-2 max-h-80 overflow-y-auto">
                         <p className="text-[10px] text-slate-500">New locations share parent business master data (item categories, statuses, customers, suppliers, payment methods, sales terms, HR settings). Stock starts empty at the new location.</p>
-                        {asArr(branches).map(b => (
+                        {(branches || []).map(b => (
                           <div key={b.id} onClick={() => setSelectedBranch({ ...b })} className="flex flex-wrap items-center justify-between gap-2 bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs cursor-pointer hover:border-sky-500 transition-colors">
                             <div>
                               <span className="text-white font-bold">{b.name}</span>
@@ -8325,7 +9855,7 @@ export default function App() {
                         </button>
                       </div>
                       <div className="space-y-2 max-h-60 overflow-y-auto">
-                        {asArr(categories).map(c => (
+                        {(categories || []).map(c => (
                           <div key={c.id} onClick={() => setSelectedCategory(c)} className="flex justify-between items-center bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs cursor-pointer hover:border-emerald-500 transition-colors">
                             <span className="text-white font-bold">{c.name} ({c.status})</span>
                             <span className="text-emerald-400">Edit ➔</span>
@@ -8342,7 +9872,7 @@ export default function App() {
                         </button>
                       </div>
                       <div className="space-y-2 max-h-60 overflow-y-auto">
-                        {asArr(itemStatuses).map(st => (
+                        {(itemStatuses || []).map(st => (
                           <div key={st.id} onClick={() => setSelectedItemStatus(st)} className="flex justify-between items-center bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs cursor-pointer hover:border-emerald-500 transition-colors">
                             <div>
                               <span className="text-white font-bold">{st.name}</span>
@@ -8390,7 +9920,7 @@ export default function App() {
                         {(itemVariances || []).length === 0 && (
                           <p className="text-[11px] text-slate-500">No variances yet. Add attributes your business uses (not every shop needs Size/Colour).</p>
                         )}
-                        {asArr(itemVariances).map(v => (
+                        {(itemVariances || []).map(v => (
                           <div key={v.id || v.name} className="flex justify-between items-center bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs">
                             <span className="text-white font-bold">{v.name}</span>
                             <button
@@ -8437,7 +9967,7 @@ export default function App() {
                       </div>
                       <p className="text-[10px] text-slate-400">Starting balance is included in account totals (e.g. Cash at Hand). Click a row to edit or delete.</p>
                       <div className="space-y-2 max-h-80 overflow-y-auto">
-                        {asArr(paymentMethods).map(pm => (
+                        {paymentMethods.map(pm => (
                           <div key={pm.id} onClick={() => { setSelectedPaymentMethod(pm); setPaymentMethodForm({ name: pm.name, startingBalance: pm.startingBalance || 0, currentBalance: pm.currentBalance != null ? pm.currentBalance : (pm.startingBalance || 0) }); setPaymentMethodModalOpen(true); }} className="flex justify-between items-center bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs cursor-pointer hover:border-emerald-500 transition-colors">
                             <div>
                               <span className="text-white font-bold">{pm.name}</span>
@@ -8460,7 +9990,7 @@ export default function App() {
                       </div>
                       <p className="text-[10px] text-slate-400">Terms link to sale types (Paid / Credit / Layby) and default days. Used on customers and POS.</p>
                       <div className="space-y-2 max-h-80 overflow-y-auto">
-                        {asArr(salesTerms).map(st => (
+                        {salesTerms.map(st => (
                           <div key={st.id} onClick={() => { setSelectedSalesTerm(st); setSalesTermForm({ name: st.name, type: st.type || 'Paid', days: st.days || 0 }); setSalesTermModalOpen(true); }} className="flex justify-between items-center bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs cursor-pointer hover:border-emerald-500 transition-colors">
                             <div>
                               <span className="text-white font-bold">{st.name}</span>
@@ -8469,6 +9999,56 @@ export default function App() {
                             <span className="text-emerald-400">Edit ➔</span>
                           </div>
                         ))}
+                      </div>
+                    </div>
+
+                    {/* Credit Limit Enforcement Policy Box */}
+                    <div className="bg-slate-900 p-5 rounded-xl border border-slate-700 space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 text-amber-400" />
+                          <h4 className="text-xs font-bold text-white uppercase tracking-wider">Credit Limit Enforcement Policy</h4>
+                        </div>
+                        <span className="text-[10px] text-emerald-400 font-semibold">{creditPolicy === 'stop' ? '🛑 Stop Sale (Block)' : '⚠️ Warning Alert'}</span>
+                      </div>
+                      <p className="text-[10px] text-slate-400">Select business action when an eligible customer exceeds their set Max Credit Limit during POS sale checkout.</p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                        <label className={`flex items-start gap-2.5 p-3 rounded-lg border cursor-pointer transition-colors ${creditPolicy === 'stop' ? 'bg-rose-500/10 border-rose-500/50 text-white' : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'}`}>
+                          <input
+                            type="radio"
+                            name="salesSettingsCreditPolicy"
+                            value="stop"
+                            checked={creditPolicy === 'stop'}
+                            onChange={() => {
+                              setCreditPolicy('stop');
+                              setShopProfile(prev => ({ ...prev, creditPolicy: 'stop' }));
+                              saveTenantSettingsPartial({ creditPolicy: 'stop' });
+                            }}
+                            className="mt-0.5 text-rose-500"
+                          />
+                          <div>
+                            <span className="font-bold text-xs block text-rose-400">🛑 Stop Sale (Strict Block)</span>
+                            <span className="text-[10px] text-slate-400 block mt-0.5">Completely aborts checkout if total outstanding debt exceeds customer max credit limit.</span>
+                          </div>
+                        </label>
+                        <label className={`flex items-start gap-2.5 p-3 rounded-lg border cursor-pointer transition-colors ${creditPolicy === 'warn' ? 'bg-amber-500/10 border-amber-500/50 text-white' : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'}`}>
+                          <input
+                            type="radio"
+                            name="salesSettingsCreditPolicy"
+                            value="warn"
+                            checked={creditPolicy === 'warn'}
+                            onChange={() => {
+                              setCreditPolicy('warn');
+                              setShopProfile(prev => ({ ...prev, creditPolicy: 'warn' }));
+                              saveTenantSettingsPartial({ creditPolicy: 'warn' });
+                            }}
+                            className="mt-0.5 text-amber-500"
+                          />
+                          <div>
+                            <span className="font-bold text-xs block text-amber-400">⚠️ Give Warning Alert & Allow Selling</span>
+                            <span className="text-[10px] text-slate-400 block mt-0.5">Shows full credit balance details and prompts cashier to confirm override before proceeding.</span>
+                          </div>
+                        </label>
                       </div>
                     </div>
                   </>
@@ -8560,11 +10140,11 @@ export default function App() {
                 </div>
                 <div>
                   <label className="text-slate-400 block mb-1">Payroll Cycle</label>
-                  <select value={hrSettings.payrollCycle} onChange={e => setHrSettings({...hrSettings, payrollCycle: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                  <SearchableSelect value={hrSettings.payrollCycle} onChange={e => setHrSettings({...hrSettings, payrollCycle: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                     <option value="Monthly">Monthly</option>
                     <option value="Bi-Weekly">Bi-Weekly</option>
                     <option value="Weekly">Weekly</option>
-                  </select>
+                  </SearchableSelect>
                 </div>
                 <div>
                   <label className="text-slate-400 block mb-1">Pay Day (day of month)</label>
@@ -8592,7 +10172,7 @@ export default function App() {
                       <table className="w-full text-left text-xs text-slate-300 min-w-[480px]">
                         <thead className="bg-slate-950 text-slate-400 uppercase text-[10px]"><tr><th className="py-2 px-2">Method</th><th className="py-2 px-2">Starting</th><th className="py-2 px-2">Current / Book</th></tr></thead>
                         <tbody className="divide-y divide-slate-800">
-                          {asArr(paymentMethods).map(pm => {
+                          {paymentMethods.map(pm => {
                             const start = parseFloat(pm.startingBalance) || 0;
                             const cur = pm.currentBalance != null && pm.currentBalance !== '' ? parseFloat(pm.currentBalance) : start;
                             const isCash = (pm.name || '') === 'Cash';
@@ -8608,21 +10188,58 @@ export default function App() {
                 )}
                 {settingsSubTab === 'auditLog' && (
                   <div className="bg-slate-900 p-5 rounded-xl border border-slate-700 space-y-3">
-                    <div className="flex justify-between items-center">
-                      <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Audit Log</h4>
-                      <div className="flex gap-2">
+                    <div className="flex flex-wrap justify-between items-center gap-2">
+                      <div>
+                        <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Audit Log</h4>
+                        <p className="text-[10px] text-slate-500 mt-0.5">Tracks logins, payments, deletions (sales, purchases, expenses, inventory), sales returns & purchase returns.</p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <SearchableSelect value={auditActionFilter} onChange={e => setAuditActionFilter(e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[11px] text-white">
+                          <option value="">All Actions</option>
+                          <option value="login">Logins</option>
+                          <option value="payment">Payments</option>
+                          <option value="delete">Deletions</option>
+                          <option value="return">Returns & Approvals</option>
+                        </SearchableSelect>
+                        <button type="button" onClick={async () => {
+                          try {
+                            const r = await apiFetch('/api/all-data');
+                            if (r.ok) {
+                              const d = await r.json();
+                              if (d?.tenantSettings?.auditLog) {
+                                const al = typeof d.tenantSettings.auditLog === 'string' ? JSON.parse(d.tenantSettings.auditLog) : d.tenantSettings.auditLog;
+                                if (Array.isArray(al)) setAuditLog(al);
+                              }
+                            }
+                          } catch (_) {}
+                        }} className="text-[10px] text-sky-400 font-bold">Refresh</button>
                         <button type="button" onClick={() => exportCSV('audit_' + new Date().toISOString().slice(0,10) + '.csv', (auditLog || []).map(a => ({ when: a.at, user: a.user, action: a.action, entity: a.entity, detail: a.detail })))} className="text-[10px] text-emerald-400 font-bold">Export CSV</button>
                         <button type="button" onClick={() => { if (window.confirm('Clear local audit log?')) { setAuditLog([]); try { localStorage.removeItem(tenantStorageKey('erp_audit_log')); localStorage.removeItem('erp_audit_log'); } catch (e) {} } }} className="text-[10px] text-red-400">Clear</button>
                       </div>
                     </div>
                     <div className="overflow-x-auto max-h-96">
-                      <table className="w-full text-left text-xs text-slate-300 min-w-[560px]">
+                      <table className="w-full text-left text-xs text-slate-300 min-w-[600px]">
                         <thead className="bg-slate-950 text-slate-400 uppercase text-[10px] sticky top-0"><tr><th className="py-2 px-2">When</th><th className="py-2 px-2">User</th><th className="py-2 px-2">Action</th><th className="py-2 px-2">Entity</th><th className="py-2 px-2">Detail</th></tr></thead>
                         <tbody className="divide-y divide-slate-800">
-                          {(auditLog || []).length === 0 ? <tr><td colSpan={5} className="py-4 text-center text-slate-500">No audit entries yet.</td></tr> :
-                            auditLog.map(a => (
-                              <tr key={a.id}><td className="py-1.5 px-2 whitespace-nowrap">{a.at ? new Date(a.at).toLocaleString() : ''}</td><td className="py-1.5 px-2">{a.user}</td><td className="py-1.5 px-2 text-emerald-400">{a.action}</td><td className="py-1.5 px-2">{a.entity}</td><td className="py-1.5 px-2 text-slate-400">{a.detail}</td></tr>
-                            ))}
+                          {(() => {
+                            const rows = (auditLog || []).filter(a => {
+                              if (!auditActionFilter) return true;
+                              const act = String(a.action || '').toLowerCase();
+                              const ent = String(a.entity || '').toLowerCase();
+                              if (auditActionFilter === 'return') return act.includes('return') || act.includes('approv') || ent.includes('return');
+                              return act.includes(auditActionFilter);
+                            });
+                            if (!rows.length) return <tr><td colSpan={5} className="py-4 text-center text-slate-500">No audit entries match this filter.</td></tr>;
+                            return rows.map(a => (
+                              <tr key={a.id}>
+                                <td className="py-1.5 px-2 whitespace-nowrap text-slate-400 tabular-nums">{a.at ? new Date(a.at).toLocaleString() : ''}</td>
+                                <td className="py-1.5 px-2 font-medium text-white">{a.user}</td>
+                                <td className="py-1.5 px-2"><span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${String(a.action||'').includes('delete') ? 'bg-rose-500/20 text-rose-300' : String(a.action||'').includes('payment') ? 'bg-emerald-500/20 text-emerald-300' : String(a.action||'').includes('login') ? 'bg-sky-500/20 text-sky-300' : 'bg-amber-500/20 text-amber-300'}`}>{a.action}</span></td>
+                                <td className="py-1.5 px-2 text-slate-300">{a.entity}</td>
+                                <td className="py-1.5 px-2 text-slate-400">{a.detail}</td>
+                              </tr>
+                            ));
+                          })()}
                         </tbody>
                       </table>
                     </div>
@@ -8681,7 +10298,7 @@ export default function App() {
                     <h4 className="text-xs font-bold text-emerald-400 uppercase">eTIMS / KRA</h4>
                     <div className="bg-slate-950 border border-slate-700 rounded-lg p-3 text-[11px] text-slate-400 space-y-1">
                       <p className="text-slate-300 font-semibold">Integration path</p>
-                      <p>1. <strong className="text-slate-200">Structure only (current)</strong> — invoice numbers + taxpayer fields stored in NEO.</p>
+                      <p>1. <strong className="text-slate-200">Structure only (current)</strong> — invoice numbers + taxpayer fields stored in A40.</p>
                       <p>2. <strong className="text-slate-200">Future: certified device / API</strong> — connect a KRA-approved eTIMS device or OSCU/VSCU API when available. No live KRA transmission until then.</p>
                     </div>
                     <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={!!etimsSettings.enabled} onChange={e => saveEtims({ ...etimsSettings, enabled: e.target.checked })} /> Assign invoice numbers on sales</label>
@@ -8694,10 +10311,10 @@ export default function App() {
                     <div><label className="text-[10px] text-slate-400">Taxpayer PIN (business)</label>
                       <input value={etimsSettings.taxpayerPin || ''} onChange={e => saveEtims({ ...etimsSettings, taxpayerPin: e.target.value })} placeholder="e.g. P051234567X" className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs" /></div>
                     <div><label className="text-[10px] text-slate-400">Mode</label>
-                      <select value={etimsSettings.mode || 'structure_only'} onChange={e => saveEtims({ ...etimsSettings, mode: e.target.value })} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs">
+                      <SearchableSelect value={etimsSettings.mode || 'structure_only'} onChange={e => saveEtims({ ...etimsSettings, mode: e.target.value })} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs">
                         <option value="structure_only">Structure only (no KRA API)</option>
                         <option value="future_api">Future device / API (prepared fields)</option>
-                      </select>
+                      </SearchableSelect>
                     </div>
                     {(etimsSettings.mode === 'future_api') && (
                       <div className="space-y-2 border border-slate-800 rounded-lg p-3">
@@ -8747,10 +10364,10 @@ export default function App() {
                       <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">
                         <div>
                           <label className="text-slate-500 text-[10px]">Account</label>
-                          <select value={bankRecForm.accountCode} onChange={e => setBankRecForm({ ...bankRecForm, accountCode: e.target.value })} className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white">
+                          <SearchableSelect value={bankRecForm.accountCode} onChange={e => setBankRecForm({ ...bankRecForm, accountCode: e.target.value })} className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white">
                             <option value="1000">1000 Cash</option>
                             <option value="1010">1010 M-Pesa</option>
-                          </select>
+                          </SearchableSelect>
                         </div>
                         <div>
                           <label className="text-slate-500 text-[10px]">Statement date</label>
@@ -9011,6 +10628,13 @@ export default function App() {
                   >
                     Tenant cloud backup (API)
                   </button>
+                  <button
+                    type="button"
+                    onClick={downloadUpdateZip}
+                    className="w-full py-2 bg-indigo-500 hover:bg-indigo-400 text-white font-bold rounded text-xs flex items-center justify-center gap-1.5 mt-1"
+                  >
+                    <Download className="w-3.5 h-3.5" /> Download Update ZIP (Cloudflare Project Package)
+                  </button>
 
                   <label className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold rounded text-xs flex items-center justify-center gap-1.5 cursor-pointer">
                     <Upload className="w-3.5 h-3.5 text-emerald-400" /> Restore System File (Direct DB Sync)
@@ -9037,7 +10661,7 @@ export default function App() {
                                   if (parsed.tasks) { setTasks(parsed.tasks)}
                                   if (parsed.salesTargets) { setSalesTargets(parsed.salesTargets)}
                                   if (parsed.offlineQueue) { setOfflineQueue(parsed.offlineQueue); try { localStorage.setItem('erp_offline_queue', JSON.stringify(parsed.offlineQueue)); } catch (e) {} }
-                                  if (parsed.cashUpHistory) { setCashUpHistory(sanitizeCashUps(parsed.cashUpHistory)); }
+                                  if (parsed.cashUpHistory) { setCashUpHistory(parsed.cashUpHistory)}
                                   if (parsed.auditLog) { setAuditLog(parsed.auditLog)}
                                   if (parsed.stockMovements) { setStockMovements(parsed.stockMovements)}
                                   if (parsed.etimsSettings) { setEtimsSettings(parsed.etimsSettings)}
@@ -9082,8 +10706,8 @@ export default function App() {
       {/* --- MODALS --- */}
       {/* User Profile Modal */}
       {userProfileModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-[60] p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-[60] p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2"><h4 className="font-bold text-white text-sm">My User Profile</h4><button onClick={() => setUserProfileModalOpen(false)} className="text-slate-400">✕</button></div>
             <form className="space-y-3 text-xs" onSubmit={async e => {
               e.preventDefault(); if (!currentUser) return;
@@ -9123,41 +10747,40 @@ export default function App() {
               <p className="text-slate-500">Role: {currentUser?.role || '—'}</p>
               <div className="flex gap-2"><button type="submit" className="flex-1 py-2.5 bg-emerald-500 text-slate-950 font-bold rounded">Save Profile</button><button type="button" onClick={() => { setUserProfileModalOpen(false); setChangePasswordModalOpen(true); }} className="flex-1 py-2.5 bg-slate-700 text-white font-bold rounded">Change Password</button></div>
             </form>
+            <div className="space-y-2 border-t border-slate-800 pt-3">
+              <p className="text-[10px] font-bold text-slate-400 uppercase">Change PIN</p>
+              <input type="password" placeholder="Current PIN" value={profilePinCurrent} onChange={e => setProfilePinCurrent(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs" />
+              <input type="password" placeholder="New PIN (min 4)" value={profilePinNew} onChange={e => setProfilePinNew(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs" />
+              <input type="password" placeholder="Confirm new PIN" value={profilePinConfirm} onChange={e => setProfilePinConfirm(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs" />
+              {profilePinNew && <p className={`text-[10px] ${pinStrength(profilePinNew).score >= 2 ? 'text-emerald-400' : 'text-amber-400'}`}>Strength: {pinStrength(profilePinNew).label}</p>}
+              <button type="button" onClick={async () => {
+                if (profilePinNew !== profilePinConfirm) { alert('New PIN and confirm do not match.'); return; }
+                const st = pinStrength(profilePinNew);
+                if (!st.ok) { alert(st.label); return; }
+                if (!window.confirm('Update your PIN now?')) return;
+                try {
+                  const res = await apiFetch('/api/change-pin', {
+                    method: 'POST',
+                    body: JSON.stringify({ currentPin: profilePinCurrent, newPin: profilePinNew })
+                  });
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok) { alert(data.error || 'Could not update PIN'); return; }
+                  setProfilePinCurrent(''); setProfilePinNew(''); setProfilePinConfirm('');
+                  logAudit('update', 'user', 'PIN changed');
+                  alert('PIN updated securely on server.');
+                } catch (e) {
+                  alert('Network error updating PIN.');
+                }
+              }} className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded">Update PIN</button>
+            </div>
           </div>
-              <div className="space-y-2 border-t border-slate-800 pt-3">
-                <p className="text-[10px] font-bold text-slate-400 uppercase">Change PIN</p>
-                <input type="password" placeholder="Current PIN" value={profilePinCurrent} onChange={e => setProfilePinCurrent(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs" />
-                <input type="password" placeholder="New PIN (min 4)" value={profilePinNew} onChange={e => setProfilePinNew(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs" />
-                <input type="password" placeholder="Confirm new PIN" value={profilePinConfirm} onChange={e => setProfilePinConfirm(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs" />
-                {profilePinNew && <p className={`text-[10px] ${pinStrength(profilePinNew).score >= 2 ? 'text-emerald-400' : 'text-amber-400'}`}>Strength: {pinStrength(profilePinNew).label}</p>}
-                <button type="button" onClick={async () => {
-                  if (profilePinNew !== profilePinConfirm) { alert('New PIN and confirm do not match.'); return; }
-                  const st = pinStrength(profilePinNew);
-                  if (!st.ok) { alert(st.label); return; }
-                  if (!window.confirm('Update your PIN now?')) return;
-                  try {
-                    const res = await apiFetch('/api/change-pin', {
-                      method: 'POST',
-                      body: JSON.stringify({ currentPin: profilePinCurrent, newPin: profilePinNew })
-                    });
-                    const data = await res.json().catch(() => ({}));
-                    if (!res.ok) { alert(data.error || 'Could not update PIN'); return; }
-                    setProfilePinCurrent(''); setProfilePinNew(''); setProfilePinConfirm('');
-                    logAudit('update', 'user', 'PIN changed');
-                    alert('PIN updated securely on server.');
-                  } catch (e) {
-                    alert('Network error updating PIN.');
-                  }
-                }} className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded">Update PIN</button>
-              </div>
-
         </div>
       )}
 
       {/* Self Change Password Modal */}
       {changePasswordModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Change My Password / PIN</h4>
               <button onClick={() => setChangePasswordModalOpen(false)} className="text-slate-400">✕</button>
@@ -9212,8 +10835,8 @@ export default function App() {
 
       {/* Add New Customer Modal */}
       {newCustomerModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Add New Customer</h4>
               <button onClick={() => setNewCustomerModalOpen(false)} className="text-slate-400">✕</button>
@@ -9234,7 +10857,7 @@ export default function App() {
               <div><label className="text-slate-400 block mb-1 text-xs">Tags (comma-separated)</label>
                 <input type="text" value={customerForm.tags || ''} onChange={e => setCustomerForm({...customerForm, tags: e.target.value})} placeholder="VIP, wholesale" className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs" /></div>
               <div><label className="text-slate-400 block mb-1 text-xs">Price List</label>
-                <select value={customerForm.priceList || 'retail'} onChange={e => setCustomerForm({...customerForm, priceList: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"><option value="retail">Retail</option><option value="wholesale">Wholesale</option></select></div>
+                <SearchableSelect value={customerForm.priceList || 'retail'} onChange={e => setCustomerForm({...customerForm, priceList: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"><option value="retail">Retail</option><option value="wholesale">Wholesale</option></SearchableSelect></div>
               <div><label className="text-slate-400 block mb-1 text-xs">KRA / Buyer PIN</label>
                 <input type="text" value={customerForm.kraPin || ''} onChange={e => setCustomerForm({...customerForm, kraPin: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs" /></div>
               <div><label className="text-slate-400 block mb-1 text-xs">Loyalty Points</label>
@@ -9247,9 +10870,9 @@ export default function App() {
                     <label key={type} className="flex items-center gap-1.5 text-slate-200 cursor-pointer">
                       <input 
                         type="checkbox"
-                        checked={normalizeEligibility(customerForm.eligibility).includes(type)}
+                        checked={(customerForm.eligibility || ['Paid']).includes(type)}
                         onChange={e => {
-                          const currentEl = normalizeEligibility(customerForm.eligibility);
+                          const currentEl = customerForm.eligibility || ['Paid'];
                           const newEl = e.target.checked ? [...currentEl, type] : currentEl.filter(t => t !== type);
                           setCustomerForm({ ...customerForm, eligibility: newEl.length > 0 ? newEl : ['Paid'] });
                         }}
@@ -9262,9 +10885,9 @@ export default function App() {
               </div>
               <div>
                 <label className="text-slate-400 block mb-1 font-semibold">Payment / Sales Term:</label>
-                <select value={customerForm.salesTermId || ''} onChange={e => {
+                <SearchableSelect value={customerForm.salesTermId || ''} onChange={e => {
                   const term = salesTerms.find(t => t.id === e.target.value);
-                  let eligibility = normalizeEligibility(customerForm.eligibility);
+                  let eligibility = customerForm.eligibility || ['Paid'];
                   if (term) {
                     if (term.type === 'Paid') eligibility = ['Paid'];
                     else if (term.type === 'Credit') eligibility = Array.from(new Set([...eligibility.filter(x => x !== 'Layby'), 'Credit', 'Paid']));
@@ -9273,8 +10896,24 @@ export default function App() {
                   setCustomerForm({ ...customerForm, salesTermId: e.target.value, paymentTerm: term?.name || '', eligibility });
                 }} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   <option value="">-- Select sales term --</option>
-                  {asArr(salesTerms).map(t => <option key={t.id} value={t.id}>{t.name} ({t.type}{t.days ? `, ${t.days} days` : ''})</option>)}
-                </select>
+                  {salesTerms.map(t => <option key={t.id} value={t.id}>{t.name} ({t.type}{t.days ? `, ${t.days} days` : ''})</option>)}
+                </SearchableSelect>
+              </div>
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-slate-400 block font-semibold text-xs">Max Credit Limit ({shopProfile.currency || 'KSh'})</label>
+                  <span className="text-[10px] text-slate-500">0 = Unlimited</span>
+                </div>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  placeholder="0"
+                  value={customerForm.creditLimit || ''}
+                  onChange={e => setCustomerForm({...customerForm, creditLimit: parseFloat(e.target.value) || 0})}
+                  className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs font-mono"
+                />
+                <p className="text-[10px] text-slate-500 mt-0.5">Maximum unpaid credit balance allowed before business policy triggers.</p>
               </div>
               <button type="submit" className="w-full py-2.5 bg-emerald-500 text-slate-950 font-bold rounded">Save Customer</button>
             </form>
@@ -9284,8 +10923,8 @@ export default function App() {
 
       {/* Receipt Modal */}
       {receiptModalOpen && lastCompletedSale && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md shadow-2xl flex flex-col max-h-[90vh] space-y-3">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md shadow-2xl flex flex-col max-h-[90vh] space-y-3 my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2 print:hidden shrink-0">
               <h4 className="font-bold text-white text-sm">Sale Receipt #{lastCompletedSale.invoiceNo || lastCompletedSale.id}</h4>
               <div className="flex gap-2 items-center">
@@ -9308,6 +10947,15 @@ export default function App() {
             <div className="overflow-y-auto flex-1 min-h-0 pr-1">
             <div id="printable-receipt" className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3 text-xs text-slate-200">
               <div className="text-center border-b border-slate-800 pb-2">
+                {shopProfile.logo ? (
+                  <div className="flex justify-center mb-1.5">
+                    <img
+                      src={shopProfile.logo}
+                      alt={shopProfile.name}
+                      className="h-12 max-h-12 max-w-[150px] object-contain mx-auto"
+                    />
+                  </div>
+                ) : null}
                 <p className="font-bold text-white text-sm">{shopProfile.name}</p>
                 <p className="text-[10px] text-slate-400">{shopProfile.tagline}</p>
                 <p className="text-[10px] text-slate-400">{(branches || []).find(b => b.id === (lastCompletedSale.branchId || activeBranchId))?.name || shopProfile.location} | Tel: {shopProfile.phone}</p>
@@ -9383,8 +11031,8 @@ export default function App() {
       )}
 
       {addUserModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Add New User</h4>
               <button onClick={() => setAddUserModalOpen(false)} className="text-slate-400">✕</button>
@@ -9396,9 +11044,9 @@ export default function App() {
               </div>
               <div>
                 <label className="text-slate-400 block mb-1">Role</label>
-                <select value={newUserForm.role} onChange={e => setNewUserForm({...newUserForm, role: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
-                  {asArr(roles).map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
-                </select>
+                <SearchableSelect value={newUserForm.role} onChange={e => setNewUserForm({...newUserForm, role: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                  {roles.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
+                </SearchableSelect>
               </div>
               <div>
                 <label className="text-slate-400 block mb-1">4-Digit PIN / Password</label>
@@ -9410,16 +11058,16 @@ export default function App() {
               </div>
               <div>
                 <label className="text-slate-400 block mb-1">Status</label>
-                <select value={newUserForm.status} onChange={e => setNewUserForm({...newUserForm, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={newUserForm.status} onChange={e => setNewUserForm({...newUserForm, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   <option value="Active">Active</option>
                   <option value="Inactive">Inactive</option>
-                </select>
+                </SearchableSelect>
               </div>
               <div>
                 <label className="text-slate-400 block mb-1">Locations (multi-select)</label>
                 <p className="text-[10px] text-slate-500 mb-1">Leave empty for access to all locations. Select one or more to restrict.</p>
                 <div className="max-h-28 overflow-y-auto space-y-1 bg-slate-950 border border-slate-700 rounded p-2">
-                  {asArr(branches).map(b => {
+                  {(branches || []).map(b => {
                     const list = Array.isArray(newUserForm.allowedBranches) ? newUserForm.allowedBranches.map(String) : [];
                     const checked = list.includes(String(b.id));
                     return (
@@ -9443,8 +11091,8 @@ export default function App() {
       )}
 
       {addRoleModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Add New Role</h4>
               <button onClick={() => setAddRoleModalOpen(false)} className="text-slate-400">✕</button>
@@ -9462,8 +11110,8 @@ export default function App() {
       )}
 
       {addCategoryModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Add New Item Category</h4>
               <button onClick={() => setAddCategoryModalOpen(false)} className="text-slate-400">✕</button>
@@ -9475,10 +11123,10 @@ export default function App() {
               </div>
               <div>
                 <label className="text-slate-400 block mb-1">Status</label>
-                <select value={newCategoryForm.status} onChange={e => setNewCategoryForm({...newCategoryForm, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={newCategoryForm.status} onChange={e => setNewCategoryForm({...newCategoryForm, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   <option value="Active">Active</option>
                   <option value="Inactive">Inactive</option>
-                </select>
+                </SearchableSelect>
               </div>
               <button type="submit" className="w-full py-2.5 bg-emerald-500 text-slate-950 font-bold rounded">Save Category</button>
             </form>
@@ -9487,8 +11135,8 @@ export default function App() {
       )}
 
       {addStatusModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Add New Item Status</h4>
               <button onClick={() => setAddStatusModalOpen(false)} className="text-slate-400">✕</button>
@@ -9500,10 +11148,10 @@ export default function App() {
               </div>
               <div>
                 <label className="text-slate-400 block mb-1">Allows Sale?</label>
-                <select value={newStatusForm.canSell ? 'yes' : 'no'} onChange={e => setNewStatusForm({...newStatusForm, canSell: e.target.value === 'yes'})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={newStatusForm.canSell ? 'yes' : 'no'} onChange={e => setNewStatusForm({...newStatusForm, canSell: e.target.value === 'yes'})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   <option value="yes">Yes (Ready for Sale)</option>
                   <option value="no">No (Restricts Sale)</option>
-                </select>
+                </SearchableSelect>
               </div>
               <button type="submit" className="w-full py-2.5 bg-emerald-500 text-slate-950 font-bold rounded">Save Status</button>
             </form>
@@ -9512,8 +11160,8 @@ export default function App() {
       )}
 
       {newItemModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto space-y-4">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto space-y-4 my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Add New Item</h4>
               <button type="button" onClick={() => setNewItemModalOpen(false)} className="text-slate-400">✕</button>
@@ -9523,6 +11171,25 @@ export default function App() {
                 <label className="text-slate-400 block mb-1">Item Name *</label>
                 <input required value={itemForm.name} onChange={e => setItemForm({...itemForm, name: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" />
               </div>
+              {(itemVariances || []).length > 0 && (
+                <div className="grid grid-cols-2 gap-2 p-2.5 bg-slate-950/70 rounded border border-slate-800">
+                  {(itemVariances || []).map(v => (
+                    <div key={v.id || v.name}>
+                      <label className="text-slate-400 block mb-1 text-[11px]">{v.name}</label>
+                      <input
+                        type="text"
+                        value={(itemForm.varianceValues && itemForm.varianceValues[v.name]) || ''}
+                        onChange={e => setItemForm({
+                          ...itemForm,
+                          varianceValues: { ...(itemForm.varianceValues || {}), [v.name]: e.target.value }
+                        })}
+                        placeholder={`e.g. ${v.name}`}
+                        className="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-white text-xs"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-slate-400 block mb-1">SKU / Barcode</label>
@@ -9530,9 +11197,9 @@ export default function App() {
                 </div>
                 <div>
                   <label className="text-slate-400 block mb-1">Category</label>
-                  <select value={itemForm.category} onChange={e => setItemForm({...itemForm, category: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
-                    {asArr(categories).map(c => <option key={c.id || c.name} value={c.name}>{c.name}</option>)}
-                  </select>
+                  <SearchableSelect value={itemForm.category} onChange={e => setItemForm({...itemForm, category: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                    {(categories || []).map(c => <option key={c.id || c.name} value={c.name}>{c.name}</option>)}
+                  </SearchableSelect>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-2">
@@ -9567,33 +11234,39 @@ export default function App() {
                 {!itemForm.allLocations && (
                   <div>
                     <label className="text-slate-400 block mb-1">Location</label>
-                    <select value={itemForm.branchId || activeBranchId || ''} onChange={e => setItemForm({...itemForm, branchId: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                    <SearchableSelect value={itemForm.branchId || activeBranchId || ''} onChange={e => setItemForm({...itemForm, branchId: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                       <option value="">— Select location —</option>
                       {(accessibleBranches || branches || []).map(b => <option key={b.id} value={b.id}>{b.name}{b.isDefault ? ' (default)' : ''}</option>)}
-                    </select>
+                    </SearchableSelect>
                   </div>
                 )}
               </div>
               <div>
                 <label className="text-slate-400 block mb-1">Status</label>
-                <select value={itemForm.status} onChange={e => setItemForm({...itemForm, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={itemForm.status} onChange={e => setItemForm({...itemForm, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   {(itemStatuses || [{name:'Listed'}]).map(st => <option key={st.id || st.name} value={st.name}>{st.name}</option>)}
-                </select>
+                </SearchableSelect>
               </div>
-              <div>
-                <label className="text-slate-400 block mb-1">Photo URL</label>
-                <input value={itemForm.photoUrl} onChange={e => setItemForm({...itemForm, photoUrl: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" placeholder="https://image-link (preferred)" />
-                <p className="text-[10px] text-slate-500 mt-1">Prefer an image URL/link for faster performance. Upload is available but compressed.</p>
-                <input type="file" accept="image/*" className="w-full text-slate-300 text-[10px] mt-1" onChange={async e => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-                  if (file.size > 4 * 1024 * 1024) { alert('Image too large (max 4MB before compress). Prefer a link.'); e.target.value = ''; return; }
-                  try {
-                    const dataUrl = await compressProfileImage(file, 480, 0.65);
-                    setItemForm({ ...itemForm, photoUrl: dataUrl });
-                  } catch (_) { alert('Could not compress image. Use a URL instead.'); }
-                  e.target.value = '';
-                }} />
+              <div className="space-y-2 p-3 bg-slate-950 rounded border border-slate-800">
+                <label className="text-slate-300 font-semibold block">Item Image (Link Recommended or Compressed Upload)</label>
+                <input value={itemForm.photoUrl} onChange={e => setItemForm({...itemForm, photoUrl: e.target.value})} className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white" placeholder="https://... (Paste direct image link)" />
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-[11px] font-semibold text-emerald-400 cursor-pointer">
+                    Upload & Compress Image
+                    <input type="file" accept="image/*" className="hidden" onChange={async e => {
+                      const f = e.target.files?.[0];
+                      if (!f) return;
+                      try {
+                        const compressed = await compressItemImage(f, 420, 0.62);
+                        setItemForm(prev => ({ ...prev, photoUrl: compressed }));
+                      } catch (err) { alert('Could not compress image.'); }
+                    }} />
+                  </label>
+                  {itemForm.photoUrl && (
+                    <img src={itemForm.photoUrl} alt="" className="w-10 h-10 rounded object-cover border border-slate-700" />
+                  )}
+                </div>
+                <p className="text-[10px] text-amber-300/90">Tip: Both options work — uploaded photos are auto-compressed (~15–25 KB) to protect database speed, though pasting an external image URL link remains the fastest best practice.</p>
               </div>
               <button type="submit" className="w-full py-2.5 bg-emerald-500 text-slate-950 font-bold rounded">Save Item</button>
             </form>
@@ -9602,8 +11275,8 @@ export default function App() {
       )}
 
       {selectedInventoryItem && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Edit Inventory Item: {selectedInventoryItem.name}</h4>
               <button onClick={() => setSelectedInventoryItem(null)} className="text-slate-400">✕</button>
@@ -9612,7 +11285,7 @@ export default function App() {
               <div><label className="text-slate-400 block mb-1">Item Name</label><input type="text" value={selectedInventoryItem.name} onChange={e => setSelectedInventoryItem({...selectedInventoryItem, name: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
               {(itemVariances || []).length > 0 && (
                 <div className="grid grid-cols-2 gap-2">
-                  {asArr(itemVariances).map(v => {
+                  {(itemVariances || []).map(v => {
                     const vv = parseItemVarianceValues(selectedInventoryItem);
                     return (
                       <div key={v.id || v.name}>
@@ -9634,9 +11307,9 @@ export default function App() {
               )}
               <div>
                 <label className="text-slate-400 block mb-1">Category</label>
-                <select value={selectedInventoryItem.category} onChange={e => setSelectedInventoryItem({...selectedInventoryItem, category: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
-                  {asArr(categories).map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-                </select>
+                <SearchableSelect value={selectedInventoryItem.category} onChange={e => setSelectedInventoryItem({...selectedInventoryItem, category: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                  {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                </SearchableSelect>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div><label className="text-slate-400 block mb-1">Buying Price</label><input type="number" value={selectedInventoryItem.buyingPrice} onChange={e => setSelectedInventoryItem({...selectedInventoryItem, buyingPrice: parseFloat(e.target.value) || 0})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
@@ -9646,9 +11319,9 @@ export default function App() {
                 <div><label className="text-slate-400 block mb-1">Quantity</label><input type="number" value={selectedInventoryItem.quantity} onChange={e => setSelectedInventoryItem({...selectedInventoryItem, quantity: parseInt(e.target.value) || 0})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
                 <div>
                   <label className="text-slate-400 block mb-1">Status</label>
-                  <select value={selectedInventoryItem.status} onChange={e => setSelectedInventoryItem({...selectedInventoryItem, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
-                    {asArr(itemStatuses).map(st => <option key={st.id} value={st.name}>{st.name}</option>)}
-                  </select>
+                  <SearchableSelect value={selectedInventoryItem.status} onChange={e => setSelectedInventoryItem({...selectedInventoryItem, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                    {itemStatuses.map(st => <option key={st.id} value={st.name}>{st.name}</option>)}
+                  </SearchableSelect>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-2 bg-slate-950 p-3 rounded border border-slate-800">
@@ -9671,20 +11344,26 @@ export default function App() {
                   />
                 </div>
               </div>
-              <div>
-                <label className="text-slate-400 block mb-1">Photo Image URL</label>
-                <input type="text" value={selectedInventoryItem.photoUrl || ''} onChange={e => setSelectedInventoryItem({...selectedInventoryItem, photoUrl: e.target.value})} placeholder="https://image-link (preferred)" className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" />
-                <p className="text-[10px] text-slate-500 mt-1">Prefer a link. Upload is compressed for DB size.</p>
-                <input type="file" accept="image/*" className="w-full text-slate-300 text-[10px] mt-1" onChange={async e => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-                  if (file.size > 4 * 1024 * 1024) { alert('Image too large. Prefer a link.'); e.target.value = ''; return; }
-                  try {
-                    const dataUrl = await compressProfileImage(file, 480, 0.65);
-                    setSelectedInventoryItem({ ...selectedInventoryItem, photoUrl: dataUrl });
-                  } catch (_) { alert('Could not compress image.'); }
-                  e.target.value = '';
-                }} />
+              <div className="space-y-2 p-3 bg-slate-950 rounded border border-slate-800">
+                <label className="text-slate-300 font-semibold block">Item Image (Link Recommended or Compressed Upload)</label>
+                <input type="text" value={selectedInventoryItem.photoUrl || ''} onChange={e => setSelectedInventoryItem({...selectedInventoryItem, photoUrl: e.target.value})} placeholder="https://images.unsplash.com/..." className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white" />
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-[11px] font-semibold text-emerald-400 cursor-pointer">
+                    Upload & Compress Image
+                    <input type="file" accept="image/*" className="hidden" onChange={async e => {
+                      const f = e.target.files?.[0];
+                      if (!f) return;
+                      try {
+                        const compressed = await compressItemImage(f, 420, 0.62);
+                        setSelectedInventoryItem(prev => ({ ...prev, photoUrl: compressed }));
+                      } catch (err) { alert('Could not compress image.'); }
+                    }} />
+                  </label>
+                  {selectedInventoryItem.photoUrl && (
+                    <img src={selectedInventoryItem.photoUrl} alt="" className="w-10 h-10 rounded object-cover border border-slate-700" />
+                  )}
+                </div>
+                <p className="text-[10px] text-amber-300/90">Tip: Uploaded photos are auto-compressed (~15–25 KB) to keep the database fast, though using an image URL link is recommended as best practice.</p>
               </div>
               <div className="flex gap-2 pt-2">
                 {(isAdminUser || privileges.inventory?.update) && (
@@ -9703,8 +11382,8 @@ export default function App() {
       )}
 
       {selectedCustomer && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Edit Customer: {selectedCustomer.name}</h4>
               <button onClick={() => setSelectedCustomer(null)} className="text-slate-400">✕</button>
@@ -9720,9 +11399,9 @@ export default function App() {
                     <label key={type} className="flex items-center gap-1.5 text-slate-200 cursor-pointer">
                       <input 
                         type="checkbox"
-                        checked={normalizeEligibility(selectedCustomer.eligibility).includes(type)}
+                        checked={(selectedCustomer.eligibility || ['Paid']).includes(type)}
                         onChange={e => {
-                          const currentEl = normalizeEligibility(selectedCustomer.eligibility);
+                          const currentEl = selectedCustomer.eligibility || ['Paid'];
                           const newEl = e.target.checked ? [...currentEl, type] : currentEl.filter(t => t !== type);
                           setSelectedCustomer({ ...selectedCustomer, eligibility: newEl.length > 0 ? newEl : ['Paid'] });
                         }}
@@ -9735,9 +11414,9 @@ export default function App() {
               </div>
               <div>
                 <label className="text-slate-400 block mb-1 font-semibold">Payment / Sales Term:</label>
-                <select value={selectedCustomer.salesTermId || ''} onChange={e => {
+                <SearchableSelect value={selectedCustomer.salesTermId || ''} onChange={e => {
                   const term = salesTerms.find(t => t.id === e.target.value);
-                  let eligibility = normalizeEligibility(selectedCustomer.eligibility);
+                  let eligibility = selectedCustomer.eligibility || ['Paid'];
                   if (term) {
                     if (term.type === 'Paid') eligibility = ['Paid'];
                     else if (term.type === 'Credit') eligibility = Array.from(new Set([...(eligibility||[]).filter(x => x !== 'Layby'), 'Credit', 'Paid']));
@@ -9746,8 +11425,24 @@ export default function App() {
                   setSelectedCustomer({ ...selectedCustomer, salesTermId: e.target.value, paymentTerm: term?.name || '', eligibility });
                 }} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   <option value="">-- Select sales term --</option>
-                  {asArr(salesTerms).map(t => <option key={t.id} value={t.id}>{t.name} ({t.type}{t.days ? `, ${t.days} days` : ''})</option>)}
-                </select>
+                  {salesTerms.map(t => <option key={t.id} value={t.id}>{t.name} ({t.type}{t.days ? `, ${t.days} days` : ''})</option>)}
+                </SearchableSelect>
+              </div>
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-slate-400 block font-semibold text-xs">Max Credit Limit ({shopProfile.currency || 'KSh'})</label>
+                  <span className="text-[10px] text-slate-500">0 = Unlimited</span>
+                </div>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  placeholder="0"
+                  value={selectedCustomer.creditLimit ?? 0}
+                  onChange={e => setSelectedCustomer({...selectedCustomer, creditLimit: parseFloat(e.target.value) || 0})}
+                  className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs font-mono"
+                />
+                <p className="text-[10px] text-slate-500 mt-0.5">Maximum unpaid credit balance allowed before business policy triggers.</p>
               </div>
               <div className="flex gap-2 pt-2">
                 {(isAdminUser || privileges.customers?.update) && (
@@ -9766,8 +11461,8 @@ export default function App() {
       )}
 
       {selectedExpenseItem && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Edit Expense Item</h4>
               <button onClick={() => setSelectedExpenseItem(null)} className="text-slate-400">✕</button>
@@ -9776,9 +11471,9 @@ export default function App() {
               <div><label className="text-slate-400 block mb-1">Date</label><input type="date" value={selectedExpenseItem.date} onChange={e => setSelectedExpenseItem({...selectedExpenseItem, date: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
               <div>
                 <label className="text-slate-400 block mb-1">Category</label>
-                <select value={selectedExpenseItem.category} onChange={e => setSelectedExpenseItem({...selectedExpenseItem, category: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={selectedExpenseItem.category} onChange={e => setSelectedExpenseItem({...selectedExpenseItem, category: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   {(expenseCategories || []).map(ec => <option key={ec.id} value={ec.name}>{ec.name}</option>)}
-                </select>
+                </SearchableSelect>
               </div>
               <div className="bg-slate-950 p-3 rounded border border-slate-800 space-y-1">
                 <p className="text-[10px] font-bold text-slate-400 uppercase">Payment History</p>
@@ -9790,19 +11485,16 @@ export default function App() {
                     hist = paid > 0 ? [{ date: selectedExpenseItem.date, amount: paid, paymentMethod: selectedExpenseItem.paymentMethod || '—', mpesaCode: selectedExpenseItem.mpesaCode || '' }] : [];
                   }
                   if (!hist.length) return <p className="text-[10px] text-slate-500">No payments recorded yet.</p>;
-                  return (
-                    <div className="space-y-1 max-h-40 overflow-y-auto">
-                      {hist.map((p, idx) => {
-                        const row = formatPaymentHistoryEntry(p);
-                        return (
-                          <div key={p.id || idx} className="text-[11px] border-b border-slate-800 pb-1.5 space-y-0.5">
-                            <div className="text-slate-400">{row.when}</div>
-                            <div className="text-white font-medium">{row.methodPart}{row.txn ? <span className="text-sky-400"> {row.txn}</span> : null}{row.amt ? <span className="text-emerald-400"> {row.amt}</span> : null}</div>
-                          </div>
-                        );
-                      })}
+                  return hist.map((p, idx) => (
+                    <div key={p.id || idx} className="flex flex-wrap justify-between gap-1 text-[11px] border-b border-slate-800 pb-1">
+                      <span className="text-slate-400">{p.date ? new Date(p.date).toLocaleString() : '—'}</span>
+                      <span className="text-white">{p.paymentMethod || p.method || '—'}</span>
+                      {(String(p.paymentMethod || p.method || '').toLowerCase().includes('m-pesa') || p.mpesaCode) && (
+                        <span className="text-sky-400 font-mono">TXN {p.mpesaCode || p.txnNo || '—'}</span>
+                      )}
+                      <span className="text-emerald-400 font-bold">{shopProfile.currency} {Number(p.amount || 0).toLocaleString()}</span>
                     </div>
-                  );
+                  ));
                 })()}
               </div>
               <div><label className="text-slate-400 block mb-1">Description</label><input type="text" value={selectedExpenseItem.description} onChange={e => setSelectedExpenseItem({...selectedExpenseItem, description: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
@@ -9826,7 +11518,7 @@ export default function App() {
                 <div><label className="text-slate-400 block mb-1">Payer</label><input type="text" value={selectedExpenseItem.payer || ''} onChange={e => setSelectedExpenseItem({...selectedExpenseItem, payer: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
                 <div><label className="text-slate-400 block mb-1">Paid To</label><input type="text" value={selectedExpenseItem.paidTo || ''} onChange={e => setSelectedExpenseItem({...selectedExpenseItem, paidTo: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
               </div>
-              <div><label className="text-slate-400 block mb-1">Payment Method</label><select value={selectedExpenseItem.paymentMethod} onChange={e => setSelectedExpenseItem({...selectedExpenseItem, paymentMethod: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">{(paymentMethods||[{name:'Cash'},{name:'M-Pesa'}]).map(pm=><option key={pm.id||pm.name} value={pm.name}>{pm.name}</option>)}</select></div>
+              <div><label className="text-slate-400 block mb-1">Payment Method</label><SearchableSelect value={selectedExpenseItem.paymentMethod} onChange={e => setSelectedExpenseItem({...selectedExpenseItem, paymentMethod: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">{(paymentMethods||[{name:'Cash'},{name:'M-Pesa'}]).map(pm=><option key={pm.id||pm.name} value={pm.name}>{pm.name}</option>)}</SearchableSelect></div>
               {String(selectedExpenseItem.paymentMethod||'').toLowerCase().includes('m-pesa') && (
                 <div><label className="text-emerald-400 block mb-1">M-Pesa TXN No</label><input type="text" value={selectedExpenseItem.mpesaCode||''} onChange={e => setSelectedExpenseItem({...selectedExpenseItem, mpesaCode: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" placeholder="TXN No" /></div>
               )}
@@ -9847,8 +11539,8 @@ export default function App() {
       )}
 
       {selectedSaleItem && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] flex flex-col my-auto">
             <div className="overflow-y-auto flex-1 min-h-0 space-y-4 pr-1">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Transaction Details & Payment Update: #{selectedSaleItem.id}</h4>
@@ -9876,16 +11568,17 @@ export default function App() {
                   }
                   if (!hist.length) return <p className="text-[10px] text-slate-500">No payments recorded yet.</p>;
                   return (
-                    <div className="space-y-1 max-h-40 overflow-y-auto">
-                      {hist.map((p, idx) => {
-                        const row = formatPaymentHistoryEntry(p);
-                        return (
-                          <div key={p.id || idx} className="text-[11px] border-b border-slate-800 pb-1.5 space-y-0.5">
-                            <div className="text-slate-400">{row.when}</div>
-                            <div className="text-white font-medium">{row.methodPart}{row.txn ? <span className="text-sky-400"> {row.txn}</span> : null}{row.amt ? <span className="text-emerald-400"> {row.amt}</span> : null}</div>
-                          </div>
-                        );
-                      })}
+                    <div className="space-y-1 max-h-36 overflow-y-auto">
+                      {hist.map((p, idx) => (
+                        <div key={p.id || idx} className="flex flex-wrap justify-between gap-1 text-[11px] border-b border-slate-800 pb-1">
+                          <span className="text-slate-400">{p.date ? new Date(p.date).toLocaleString() : '—'}</span>
+                          <span className="text-white">{p.paymentMethod || p.method || '—'}</span>
+                          {(String(p.paymentMethod || p.method || '').toLowerCase().includes('m-pesa') || p.mpesaCode) && (
+                            <span className="text-sky-400 font-mono">TXN {p.mpesaCode || p.txnNo || '—'}</span>
+                          )}
+                          <span className="text-emerald-400 font-bold">{shopProfile.currency} {Number(p.amount || 0).toLocaleString()}</span>
+                        </div>
+                      ))}
                     </div>
                   );
                 })()}
@@ -9914,7 +11607,7 @@ export default function App() {
                 <Printer className="w-4 h-4" /> Print Past Sale Receipt
               </button>
               <button onClick={() => openSalesReturn(selectedSaleItem)} className="w-full py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 font-bold rounded flex items-center justify-center gap-1.5 text-xs">
-                Create Sales Return
+                {(isAdminUser || canUpdate('sales')) ? 'Create Sales Return' : 'Request Sales Return (Manager Approval)'}
               </button>
 
               {(isAdminUser || privileges.sales?.update) && (
@@ -9932,12 +11625,12 @@ export default function App() {
                     </div>
                     <div>
                       <label className="text-[10px] text-slate-400 block mb-1">Payment Method:</label>
-                      <select id="update-pay-method" defaultValue={selectedSaleItem.paymentMethod} className="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-white" onChange={e => {
+                      <SearchableSelect id="update-pay-method" defaultValue={selectedSaleItem.paymentMethod} className="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-white" onChange={e => {
                         const box = document.getElementById('update-mpesa-wrap');
                         if (box) box.style.display = String(e.target.value || '').toLowerCase().includes('m-pesa') ? 'block' : 'none';
                       }}>
                         {(paymentMethods || [{ name: 'Cash' }, { name: 'M-Pesa' }]).map(pm => <option key={pm.id || pm.name} value={pm.name}>{pm.name}</option>)}
-                      </select>
+                      </SearchableSelect>
                     </div>
                   </div>
                   <div id="update-mpesa-wrap" style={{ display: String(selectedSaleItem.paymentMethod || '').toLowerCase().includes('m-pesa') ? 'block' : 'none' }}>
@@ -9956,7 +11649,6 @@ export default function App() {
                         alert('Enter a payment amount greater than 0.');
                         return;
                       }
-                      // Do not accept more than remaining balance (same payment rules)
                       if (addAmount > currentDue) addAmount = currentDue;
 
                       const newPaidAmt = prevPaid + addAmount;
@@ -9967,19 +11659,44 @@ export default function App() {
 
                       const mpesaTxnEl = document.getElementById('update-mpesa-code');
                       const mpesaTxn = mpesaTxnEl ? (mpesaTxnEl.value || '').trim() : '';
+
+                      let existingHist = selectedSaleItem.paymentHistory;
+                      try { if (typeof existingHist === 'string') existingHist = JSON.parse(existingHist || '[]'); } catch (_) { existingHist = []; }
+                      if (!Array.isArray(existingHist)) existingHist = [];
+                      if (existingHist.length === 0 && prevPaid > 0) {
+                        existingHist = [{
+                          id: `spay-init-${selectedSaleItem.id}`,
+                          date: selectedSaleItem.date || selectedSaleItem.createdAt,
+                          amount: prevPaid,
+                          paymentMethod: selectedSaleItem.paymentMethod || 'Cash',
+                          mpesaCode: selectedSaleItem.mpesaCode && selectedSaleItem.mpesaCode !== 'N/A' ? selectedSaleItem.mpesaCode : ''
+                        }];
+                      }
+                      const nextPaymentLine = {
+                        id: `spay-${Date.now()}`,
+                        date: new Date().toISOString(),
+                        amount: addAmount,
+                        paymentMethod: method,
+                        mpesaCode: (method && String(method).toLowerCase().includes('m-pesa')) ? mpesaTxn : ''
+                      };
+                      const nextHistory = [...existingHist, nextPaymentLine];
+
                       const updatedSale = {
                         ...selectedSaleItem,
                         paidAmount: newPaidAmt,
                         balanceDue: newBalance,
                         saleType: newType,
-                        paymentMethod: method,
+                        paymentMethod: selectedSaleItem.paymentMethod && selectedSaleItem.paymentMethod !== method
+                          ? `${selectedSaleItem.paymentMethod} + ${method}`
+                          : method,
+                        paymentHistory: nextHistory,
                         items: itemsJson,
                         mpesaCode: (method && String(method).toLowerCase().includes('m-pesa'))
                           ? (mpesaTxn || selectedSaleItem.mpesaCode || '')
                           : (selectedSaleItem.mpesaCode || 'N/A')
                       };
 
-                      const localSale = { ...updatedSale, items: itemsArr };
+                      const localSale = { ...updatedSale, items: itemsArr, paymentHistory: nextHistory };
                       setSales(sales.map(s => s.id === updatedSale.id ? localSale : s));
                       setSelectedSaleItem(null);
                       try {
@@ -9991,6 +11708,8 @@ export default function App() {
                         if (!res.ok) {
                           setSales(sales.map(s => s.id === selectedSaleItem.id ? selectedSaleItem : s));
                           alert('Failed to update sale record in database.');
+                        } else {
+                          logAudit('payment', 'sales', `${updatedSale.id} · ${shopProfile.currency} ${addAmount} via ${method}`);
                         }
                       } catch (err) {
                         console.error(err);
@@ -10029,22 +11748,22 @@ export default function App() {
 
       {/* Admin User Edit Modal */}
       {selectedUser && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Edit User: {selectedUser.name} (Admin Override)</h4>
               <button onClick={() => setSelectedUser(null)} className="text-slate-400">✕</button>
             </div>
             <div className="space-y-3 text-xs">
               <div><label className="text-slate-400 block mb-1">Name</label><input type="text" value={selectedUser.name} onChange={e => setSelectedUser({...selectedUser, name: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
-              <div><label className="text-slate-400 block mb-1">Role</label><select value={selectedUser.role} onChange={e => setSelectedUser({...selectedUser, role: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">{asArr(roles).map(r => <option key={r.id} value={r.name}>{r.name}</option>)}</select></div>
+              <div><label className="text-slate-400 block mb-1">Role</label><SearchableSelect value={selectedUser.role} onChange={e => setSelectedUser({...selectedUser, role: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">{roles.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}</SearchableSelect></div>
               <div><label className="text-slate-400 block mb-1">Override PIN (leave blank to keep)</label><input type="password" maxLength={32} value={selectedUser.pin && !String(selectedUser.pin).startsWith('pbkdf2$') ? selectedUser.pin : ''} onChange={e => setSelectedUser({...selectedUser, pin: e.target.value})} placeholder="New PIN only if changing" className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono" /></div>
-              <div><label className="text-slate-400 block mb-1">Status</label><select value={selectedUser.status} onChange={e => setSelectedUser({...selectedUser, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white"><option value="Active">Active</option><option value="Inactive">Inactive</option></select></div>
+              <div><label className="text-slate-400 block mb-1">Status</label><SearchableSelect value={selectedUser.status} onChange={e => setSelectedUser({...selectedUser, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white"><option value="Active">Active</option><option value="Inactive">Inactive</option></SearchableSelect></div>
               <div>
                 <label className="text-slate-400 block mb-1">Locations (multi-select)</label>
                 <p className="text-[10px] text-slate-500 mb-1">Empty = all locations. Select one or more to restrict this user.</p>
                 <div className="max-h-28 overflow-y-auto space-y-1 bg-slate-950 border border-slate-700 rounded p-2">
-                  {asArr(branches).map(b => {
+                  {(branches || []).map(b => {
                     let list = selectedUser.allowedBranches;
                     try { if (typeof list === 'string') list = JSON.parse(list || '[]'); } catch (_) { list = []; }
                     list = Array.isArray(list) ? list.map(String) : [];
@@ -10073,8 +11792,8 @@ export default function App() {
       )}
 
       {selectedRole && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-lg space-y-4 max-h-[90vh] overflow-y-auto shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-lg space-y-4 max-h-[90vh] overflow-y-auto shadow-2xl my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Configure Privileges for Role: {selectedRole.name}</h4>
               <button onClick={() => setSelectedRole(null)} className="text-slate-400">✕</button>
@@ -10088,7 +11807,7 @@ export default function App() {
                 <label className="text-slate-400 block mb-2 font-semibold">Allowed locations (leave none checked = all locations)</label>
                 <div className="bg-slate-950 border border-slate-800 rounded p-3 max-h-32 overflow-y-auto space-y-1">
                   {(branches || []).length === 0 && <p className="text-slate-500 text-[10px]">No locations yet. Add them under Settings → Locations.</p>}
-                  {asArr(branches).map(b => {
+                  {(branches || []).map(b => {
                     const list = Array.isArray(selectedRole.privileges?.allowedBranches) ? selectedRole.privileges.allowedBranches.map(String) : [];
                     const checked = list.includes(String(b.id));
                     return (
@@ -10126,6 +11845,10 @@ export default function App() {
                     { type: 'tab', key: 'suppliers', label: 'Suppliers' },
                     { type: 'tab', key: 'reports', label: 'Reports (all)' },
                     { type: 'tab', key: 'reportComprehensive', label: 'Comprehensive Reports Center' },
+                    { type: 'tab', key: 'reportInventory', label: 'Report · Inventory' },
+                    { type: 'tab', key: 'reportAging', label: 'Report · Aging' },
+                    { type: 'tab', key: 'reportFinancial', label: 'Report · Financial' },
+                    { type: 'tab', key: 'reportLedger', label: 'Report · Accounting Ledger' },
                     { type: 'group', key: 'reportSales', label: 'Report · Sales', children: [
                       { key: 'reportSalesMostItems', label: 'Top Items' },
                       { key: 'reportSalesMostCategories', label: 'Categories' },
@@ -10134,8 +11857,7 @@ export default function App() {
                       { key: 'reportSalesKpis', label: 'KPI Cards (Sales/Margin/Net)' },
                       { key: 'reportSalesPeople', label: 'Salespeople by Category' },
                       { key: 'reportSalesCreditsLayby', label: 'Credit / Layby' },
-                      { key: 'reportSalesTax', label: 'Tax' },
-                      { key: 'reportSalesByLocation', label: 'Sales by Location' }
+                      { key: 'reportSalesTax', label: 'Tax' }
                     ]},
                     { type: 'group', key: 'reportPurchase', label: 'Report · Purchase', children: [
                       { key: 'reportPurchaseSummary', label: 'Summary' },
@@ -10143,13 +11865,6 @@ export default function App() {
                       { key: 'reportPurchaseCogs', label: 'COGS' },
                       { key: 'reportPurchaseUnpaid', label: 'Unpaid' },
                       { key: 'reportPurchaseTax', label: 'Tax' }
-                    ]},
-                    { type: 'group', key: 'reportInventory', label: 'Report · Inventory', children: [
-                      { key: 'reportInventoryValuation', label: 'Valuation' },
-                      { key: 'reportInventoryDeadStock', label: 'Dead Stock' },
-                      { key: 'reportInventoryLowStock', label: 'Low Stock' },
-                      { key: 'reportInventoryBalance', label: 'Stock Balance' },
-                      { key: 'reportInventoryBranch', label: 'Branch Valuation' }
                     ]},
                     { type: 'group', key: 'reportExpense', label: 'Report · Expense', children: [
                       { key: 'reportExpenseHighCategories', label: 'High Categories' },
@@ -10163,21 +11878,6 @@ export default function App() {
                     ]},
                     { type: 'group', key: 'reportCustomer', label: 'Report · Customer', children: [
                       { key: 'reportCustomerStatement', label: 'Statement' }
-                    ]},
-                    { type: 'group', key: 'reportAging', label: 'Report · Aging', children: [
-                      { key: 'reportAgingSummary', label: 'Aging Summary' }
-                    ]},
-                    { type: 'group', key: 'reportFinancial', label: 'Report · Financial', children: [
-                      { key: 'reportFinancialPnl', label: 'Profit & Loss' },
-                      { key: 'reportFinancialBalance', label: 'Balance Sheet' },
-                      { key: 'reportFinancialCashflow', label: 'Cash Flow' },
-                      { key: 'reportFinancialComparative', label: 'Comparative' },
-                      { key: 'reportFinancialTax', label: 'Tax Summary' }
-                    ]},
-                    { type: 'group', key: 'reportLedger', label: 'Report · Accounting Ledger', children: [
-                      { key: 'reportLedgerTrial', label: 'Trial Balance' },
-                      { key: 'reportLedgerJournals', label: 'Journals' },
-                      { key: 'reportLedgerReconcile', label: 'Reconciliation' }
                     ]},
                     { type: 'tab', key: 'settings', label: 'Settings' },
                     { type: 'tab', key: 'purchase', label: 'Purchase' },
@@ -10201,16 +11901,12 @@ export default function App() {
                                   // When toggling View on a report parent, sync all its section children
                                   if (action === 'view') {
                                     const childMap = {
-                                      reportSales: ['reportSalesMostItems','reportSalesMostCategories','reportSalesDormant','reportSalesBestPeople','reportSalesKpis','reportSalesPeople','reportSalesCreditsLayby','reportSalesTax','reportSalesByLocation'],
+                                      reportSales: ['reportSalesMostItems','reportSalesMostCategories','reportSalesDormant','reportSalesBestPeople','reportSalesKpis','reportSalesPeople','reportSalesCreditsLayby','reportSalesTax'],
                                       reportPurchase: ['reportPurchaseSummary','reportPurchaseByCategory','reportPurchaseCogs','reportPurchaseUnpaid','reportPurchaseTax'],
-                                      reportInventory: ['reportInventoryValuation','reportInventoryDeadStock','reportInventoryLowStock','reportInventoryBalance','reportInventoryBranch'],
                                       reportExpense: ['reportExpenseHighCategories','reportExpenseFrequent','reportExpenseUnpaid','reportExpenseTax'],
                                       reportHr: ['reportHrSummary','reportHrLeaveSalary'],
                                       reportCustomer: ['reportCustomerStatement'],
-                                      reportAging: ['reportAgingSummary'],
-                                      reportFinancial: ['reportFinancialPnl','reportFinancialBalance','reportFinancialCashflow','reportFinancialComparative','reportFinancialTax'],
-                                      reportLedger: ['reportLedgerTrial','reportLedgerJournals','reportLedgerReconcile'],
-                                      reports: ['reportComprehensive','reportSales','reportPurchase','reportInventory','reportExpense','reportHr','reportCustomer','reportAging','reportFinancial','reportLedger']
+                                      reports: ['reportComprehensive','reportInventory','reportAging','reportFinancial','reportLedger']
                                     };
                                     const childKeys = childMap[tabKey] || [];
                                     childKeys.forEach(ck => {
@@ -10252,8 +11948,8 @@ export default function App() {
       )}
 
       {selectedCategory && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Edit Category</h4>
               <button onClick={() => setSelectedCategory(null)} className="text-slate-400">✕</button>
@@ -10270,8 +11966,8 @@ export default function App() {
       )}
 
       {addExpenseCategoryModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Add New Expense Category</h4>
               <button onClick={() => setAddExpenseCategoryModalOpen(false)} className="text-slate-400">✕</button>
@@ -10303,8 +11999,8 @@ export default function App() {
       )}
 
       {selectedExpenseCategory && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-55 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-55 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Edit Expense Category</h4>
               <button onClick={() => setSelectedExpenseCategory(null)} className="text-slate-400">✕</button>
@@ -10313,10 +12009,10 @@ export default function App() {
               <div><label className="text-slate-400 block mb-1">Category Name</label><input type="text" value={selectedExpenseCategory.name} onChange={e => setSelectedExpenseCategory({...selectedExpenseCategory, name: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
               <div>
                 <label className="text-slate-400 block mb-1">Status</label>
-                <select value={selectedExpenseCategory.status || 'Active'} onChange={e => setSelectedExpenseCategory({...selectedExpenseCategory, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={selectedExpenseCategory.status || 'Active'} onChange={e => setSelectedExpenseCategory({...selectedExpenseCategory, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   <option value="Active">Active</option>
                   <option value="Inactive">Inactive</option>
-                </select>
+                </SearchableSelect>
               </div>
               <div className="flex gap-2 pt-2">
                 <button onClick={() => handleSaveExpenseCategory(selectedExpenseCategory)} className="flex-1 py-2 bg-emerald-500 text-slate-950 font-bold rounded">Save Changes</button>
@@ -10328,8 +12024,8 @@ export default function App() {
       )}
 
       {selectedItemStatus && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Edit Item Status</h4>
               <button onClick={() => setSelectedItemStatus(null)} className="text-slate-400">✕</button>
@@ -10338,10 +12034,10 @@ export default function App() {
               <div><label className="text-slate-400 block mb-1">Status Name</label><input type="text" value={selectedItemStatus.name} onChange={e => setSelectedItemStatus({...selectedItemStatus, name: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
               <div>
                 <label className="text-slate-400 block mb-1">Allows Sale?</label>
-                <select value={selectedItemStatus.canSell ? 'yes' : 'no'} onChange={e => setSelectedItemStatus({...selectedItemStatus, canSell: e.target.value === 'yes'})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={selectedItemStatus.canSell ? 'yes' : 'no'} onChange={e => setSelectedItemStatus({...selectedItemStatus, canSell: e.target.value === 'yes'})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   <option value="yes">Yes (Ready for Sale)</option>
                   <option value="no">No (Restricts Sale)</option>
-                </select>
+                </SearchableSelect>
               </div>
               <div className="flex gap-2 pt-2">
                 <button onClick={() => handleSaveItemStatus(selectedItemStatus)} className="flex-1 py-2 bg-emerald-500 text-slate-950 font-bold rounded">Save Changes</button>
@@ -10354,8 +12050,8 @@ export default function App() {
 
       {/* Employee Modal */}
       {employeeModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">{selectedEmployee ? 'Edit Employee' : 'Add Employee'}</h4>
               <button onClick={() => { setEmployeeModalOpen(false); setSelectedEmployee(null); }} className="text-slate-400">✕</button>
@@ -10364,9 +12060,9 @@ export default function App() {
               <div className="sm:col-span-2"><label className="text-slate-400 block mb-1">Full Name *</label><input type="text" value={employeeForm.name} onChange={e => setEmployeeForm({...employeeForm, name: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
               <div><label className="text-slate-400 block mb-1">Position</label><input type="text" value={employeeForm.position} onChange={e => setEmployeeForm({...employeeForm, position: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
               <div><label className="text-slate-400 block mb-1">Department</label>
-                <select value={employeeForm.department} onChange={e => setEmployeeForm({...employeeForm, department: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={employeeForm.department} onChange={e => setEmployeeForm({...employeeForm, department: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   {(hrSettings.departments || []).map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
+                </SearchableSelect>
               </div>
               <div><label className="text-slate-400 block mb-1">Phone</label><input type="text" value={employeeForm.phone} onChange={e => setEmployeeForm({...employeeForm, phone: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
               <div><label className="text-slate-400 block mb-1">Email</label><input type="email" value={employeeForm.email} onChange={e => setEmployeeForm({...employeeForm, email: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
@@ -10378,30 +12074,30 @@ export default function App() {
               <div><label className="text-slate-400 block mb-1">Leave Balance (days)</label><input type="number" value={employeeForm.leaveBalance} onChange={e => setEmployeeForm({...employeeForm, leaveBalance: parseFloat(e.target.value) || 0})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
               <div className="sm:col-span-2">
                 <label className="text-slate-400 block mb-1">Reports To (Manager)</label>
-                <select value={employeeForm.managerId || ''} onChange={e => setEmployeeForm({...employeeForm, managerId: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={employeeForm.managerId || ''} onChange={e => setEmployeeForm({...employeeForm, managerId: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   <option value="">— No manager (top level) —</option>
                   {employees.filter(e => e.id !== selectedEmployee?.id && e.id !== employeeForm.id).map(e => (
                     <option key={e.id} value={e.id}>{e.name} ({e.position || e.department || 'Staff'})</option>
                   ))}
-                </select>
+                </SearchableSelect>
                 <p className="text-[10px] text-slate-500 mt-1">This manager approves leave for this employee. Match manager name to a login user for non-admin approval.</p>
               </div>
               <div className="sm:col-span-2">
                 <label className="text-slate-400 block mb-1">Linked User (optional)</label>
-                <select value={employeeForm.userId || ''} onChange={e => setEmployeeForm({...employeeForm, userId: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={employeeForm.userId || ''} onChange={e => setEmployeeForm({...employeeForm, userId: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   <option value="">— No login user —</option>
                   {(users || []).filter(u => u.name !== 'Sir Jycob').map(u => (
                     <option key={u.id} value={u.id}>{u.name}{u.email ? ` (${u.email})` : ''}</option>
                   ))}
-                </select>
+                </SearchableSelect>
                 <p className="text-[10px] text-slate-500 mt-1">Optional. Links this employee to a system user so leave requests auto-fill for that login.</p>
               </div>
               <div><label className="text-slate-400 block mb-1">Status</label>
-                <select value={employeeForm.status} onChange={e => setEmployeeForm({...employeeForm, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={employeeForm.status} onChange={e => setEmployeeForm({...employeeForm, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   <option value="Active">Active</option>
                   <option value="Inactive">Inactive</option>
                   <option value="Terminated">Terminated</option>
-                </select>
+                </SearchableSelect>
               </div>
             </div>
             <button onClick={() => {
@@ -10432,8 +12128,8 @@ export default function App() {
 
       {/* Leave Request Modal */}
       {leaveModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">New Leave Request</h4>
               <button onClick={() => setLeaveModalOpen(false)} className="text-slate-400">✕</button>
@@ -10442,10 +12138,10 @@ export default function App() {
               <div>
                 <label className="text-slate-400 block mb-1">Employee *</label>
                 {(isAdminUser || canUpdate('hr') || canUpdate('employees')) ? (
-                  <select value={leaveForm.employeeId} onChange={e => setLeaveForm({...leaveForm, employeeId: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                  <SearchableSelect value={leaveForm.employeeId} onChange={e => setLeaveForm({...leaveForm, employeeId: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                     <option value="">Select employee</option>
                     {employees.filter(e => e.status === 'Active').map(e => <option key={e.id} value={e.id}>{e.name} (Bal: {e.leaveBalance ?? 21}d)</option>)}
-                  </select>
+                  </SearchableSelect>
                 ) : (
                   <div className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                     {currentEmployeeRecord ? `${currentEmployeeRecord.name} (Bal: ${currentEmployeeRecord.leaveBalance ?? 21}d)` : (currentUser?.name || 'Your employee profile is not linked')}
@@ -10454,9 +12150,9 @@ export default function App() {
               </div>
               <div>
                 <label className="text-slate-400 block mb-1">Leave Type</label>
-                <select value={leaveForm.leaveType} onChange={e => setLeaveForm({...leaveForm, leaveType: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={leaveForm.leaveType} onChange={e => setLeaveForm({...leaveForm, leaveType: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   {(hrSettings.leaveTypes || ['Annual']).map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
+                </SearchableSelect>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div><label className="text-slate-400 block mb-1">Start Date *</label><input type="date" value={leaveForm.startDate} onChange={e => setLeaveForm({...leaveForm, startDate: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
@@ -10475,13 +12171,17 @@ export default function App() {
       {/* Payroll Modal */}
       {/* Sales Return Modal */}
       {salesReturnModalOpen && salesReturnSale && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Sales Return — #{salesReturnSale.id}</h4>
               <button onClick={() => { setSalesReturnModalOpen(false); setSalesReturnSale(null); }} className="text-slate-400">✕</button>
             </div>
-            <p className="text-[11px] text-slate-400">Select quantities to return (partial or full). Inventory will increase. Refund is paid out via Cash or M-Pesa.</p>
+            <p className="text-[11px] text-slate-400">
+              {(isAdminUser || canUpdate('sales'))
+                ? 'Select quantities to return (partial or full). Inventory will increase and refund is recorded via Cash or M-Pesa.'
+                : 'Your role does not include Sales Update permission. Submitting this form will send a Sales Return request to your Manager for approval.'}
+            </p>
             <div className="space-y-2 text-xs max-h-48 overflow-y-auto">
               {(salesReturnSale.items || []).map((it, idx) => {
                 const maxQ = Math.max(0, (Number(it.qty) || 0) - (Number(it.returnedQty) || 0));
@@ -10500,17 +12200,21 @@ export default function App() {
             </div>
             <div>
               <label className="text-slate-400 text-xs block mb-1">Refund method</label>
-              <select value={salesReturnMethod} onChange={e => setSalesReturnMethod(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs">
+              <SearchableSelect value={salesReturnMethod} onChange={e => setSalesReturnMethod(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs">
                 <option value="Cash">Cash</option>
                 <option value="M-Pesa">M-Pesa</option>
-              </select>
+              </SearchableSelect>
             </div>
             <div>
               <label className="text-slate-400 text-xs block mb-1">Condition of returned goods</label>
-              <select value={salesReturnDisposition} onChange={e => setSalesReturnDisposition(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs">
+              <SearchableSelect value={salesReturnDisposition} onChange={e => setSalesReturnDisposition(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs">
                 <option value="Saleable">Accepted / saleable — return to inventory</option>
                 <option value="Damaged/Rejected">Damaged / rejected — do not return to saleable inventory</option>
-              </select>
+              </SearchableSelect>
+            </div>
+            <div>
+              <label className="text-slate-400 text-xs block mb-1">Reason / Note for Manager (optional)</label>
+              <input type="text" value={returnReasonDraft} onChange={e => setReturnReasonDraft(e.target.value)} placeholder="e.g. Wrong size, defective zipper..." className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs" />
             </div>
             <div className="text-xs text-amber-400 font-semibold">
               Refund estimate: {shopProfile.currency}{' '}
@@ -10519,20 +12223,26 @@ export default function App() {
                 return s + (it.price || 0) * ret;
               }, 0).toLocaleString()}
             </div>
-            <button onClick={handleProcessSalesReturn} className="w-full py-2 bg-amber-500 text-slate-950 font-bold rounded text-xs">Process Sales Return</button>
+            <button onClick={handleProcessSalesReturn} className="w-full py-2 bg-amber-500 text-slate-950 font-bold rounded text-xs">
+              {(isAdminUser || canUpdate('sales')) ? 'Process Sales Return' : 'Submit Sales Return for Manager Approval'}
+            </button>
           </div>
         </div>
       )}
 
       {/* Purchase Return Modal */}
       {purchaseReturnModalOpen && purchaseReturnPO && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Purchase Return — {purchaseReturnPO.id}</h4>
               <button onClick={() => { setPurchaseReturnModalOpen(false); setPurchaseReturnPO(null); }} className="text-slate-400">✕</button>
             </div>
-            <p className="text-[11px] text-slate-400">Return received items to supplier. Inventory decreases and PO amount / balance due are reduced.</p>
+            <p className="text-[11px] text-slate-400">
+              {(isAdminUser || canUpdate('purchase'))
+                ? 'Return received items to supplier. Inventory decreases and PO amount / balance due are reduced.'
+                : 'Your role does not include Purchase Update permission. Submitting this form will send a Purchase Return request to your Manager for approval.'}
+            </p>
             <div className="text-xs space-y-1 bg-slate-950 p-3 rounded border border-slate-800">
               <p><span className="text-slate-400">Supplier:</span> {purchaseReturnPO.supplierName}</p>
               <p className="text-[10px] text-slate-500">Select how many units of each item to return.</p>
@@ -10557,13 +12267,19 @@ export default function App() {
             </div>
             <div>
               <label className="text-slate-400 text-xs block mb-1">Supplier settlement</label>
-              <select value={purchaseReturnSettlement} onChange={e => setPurchaseReturnSettlement(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs">
+              <SearchableSelect value={purchaseReturnSettlement} onChange={e => setPurchaseReturnSettlement(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs">
                 <option value="Supplier Credit Note">Supplier credit note for a future purchase</option>
                 <option value="Cash/M-Pesa/Bank Refund">Cash / M-Pesa / bank refund actually received</option>
-              </select>
-              {purchaseReturnSettlement === 'Cash/M-Pesa/Bank Refund' && <select value={purchaseReturnRefundMethod} onChange={e => setPurchaseReturnRefundMethod(e.target.value)} className="mt-2 w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"><option>Cash</option><option>M-Pesa</option><option>Bank</option><option>Bank Transfer</option></select>}
+              </SearchableSelect>
+              {purchaseReturnSettlement === 'Cash/M-Pesa/Bank Refund' && <SearchableSelect value={purchaseReturnRefundMethod} onChange={e => setPurchaseReturnRefundMethod(e.target.value)} className="mt-2 w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"><option>Cash</option><option>M-Pesa</option><option>Bank</option><option>Bank Transfer</option></SearchableSelect>}
             </div>
-            <button onClick={handleProcessPurchaseReturn} className="w-full py-2 bg-amber-500 text-slate-950 font-bold rounded text-xs">Process Purchase Return</button>
+            <div>
+              <label className="text-slate-400 text-xs block mb-1">Reason / Note for Manager (optional)</label>
+              <input type="text" value={returnReasonDraft} onChange={e => setReturnReasonDraft(e.target.value)} placeholder="e.g. Damaged carton on delivery..." className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs" />
+            </div>
+            <button onClick={handleProcessPurchaseReturn} className="w-full py-2 bg-amber-500 text-slate-950 font-bold rounded text-xs">
+              {(isAdminUser || canUpdate('purchase')) ? 'Process Purchase Return' : 'Submit Purchase Return for Manager Approval'}
+            </button>
           </div>
         </div>
       )}
@@ -10571,8 +12287,8 @@ export default function App() {
       
       {/* Leave edit modal */}
       {selectedLeave && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Edit Leave Request</h4>
               <button onClick={() => setSelectedLeave(null)} className="text-slate-400">✕</button>
@@ -10580,15 +12296,15 @@ export default function App() {
             <div className="space-y-3 text-xs">
               <div>
                 <label className="text-slate-400 block mb-1">Employee</label>
-                <select value={selectedLeave.employeeId} onChange={e => setSelectedLeave({...selectedLeave, employeeId: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
-                  {asArr(employees).map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-                </select>
+                <SearchableSelect value={selectedLeave.employeeId} onChange={e => setSelectedLeave({...selectedLeave, employeeId: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                  {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                </SearchableSelect>
               </div>
               <div>
                 <label className="text-slate-400 block mb-1">Leave Type</label>
-                <select value={selectedLeave.leaveType} onChange={e => setSelectedLeave({...selectedLeave, leaveType: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={selectedLeave.leaveType} onChange={e => setSelectedLeave({...selectedLeave, leaveType: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   {(hrSettings.leaveTypes || ['Annual','Sick','Unpaid','Maternity']).map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
+                </SearchableSelect>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div><label className="text-slate-400 block mb-1">Start</label><input type="date" value={selectedLeave.startDate || ''} onChange={e => setSelectedLeave({...selectedLeave, startDate: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
@@ -10598,11 +12314,11 @@ export default function App() {
               <div><label className="text-slate-400 block mb-1">Reason</label><input type="text" value={selectedLeave.reason || ''} onChange={e => setSelectedLeave({...selectedLeave, reason: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
               <div>
                 <label className="text-slate-400 block mb-1">Status</label>
-                <select value={selectedLeave.status} onChange={e => setSelectedLeave({...selectedLeave, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={selectedLeave.status} onChange={e => setSelectedLeave({...selectedLeave, status: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   <option value="Pending">Pending</option>
                   <option value="Approved">Approved</option>
                   <option value="Rejected">Rejected</option>
-                </select>
+                </SearchableSelect>
               </div>
               <div className="flex gap-2 pt-2">
                 <button onClick={() => handleSaveLeaveRequest(selectedLeave)} className="flex-1 py-2 bg-emerald-500 text-slate-950 font-bold rounded">Save Changes</button>
@@ -10614,9 +12330,9 @@ export default function App() {
       )}
 
       {/* Payment method modal */}
-                  {selectedBranch && (
-              <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-[70] p-4" onClick={() => setSelectedBranch(null)}>
-                <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-3 shadow-2xl" onClick={e => e.stopPropagation()}>
+      {selectedBranch && (
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-[70] p-3 sm:p-4 overflow-y-auto" onClick={() => setSelectedBranch(null)}>
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-3 shadow-2xl max-h-[90vh] overflow-y-auto my-auto" onClick={e => e.stopPropagation()}>
                   <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                     <h4 className="font-bold text-white text-sm">Edit location</h4>
                     <button type="button" onClick={() => setSelectedBranch(null)} className="text-slate-400">✕</button>
@@ -10655,9 +12371,9 @@ export default function App() {
             )}
 
 
-            {paymentMethodModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+      {paymentMethodModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">{selectedPaymentMethod ? 'Edit Payment Method' : 'Add Payment Method'}</h4>
               <button onClick={() => setPaymentMethodModalOpen(false)} className="text-slate-400">✕</button>
@@ -10691,8 +12407,8 @@ export default function App() {
 
       {/* Sales term modal */}
       {salesTermModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">{selectedSalesTerm ? 'Edit Sales Term' : 'Add Sales Term'}</h4>
               <button onClick={() => setSalesTermModalOpen(false)} className="text-slate-400">✕</button>
@@ -10701,11 +12417,11 @@ export default function App() {
               <div><label className="text-slate-400 block mb-1">Name *</label><input type="text" value={salesTermForm.name} onChange={e => setSalesTermForm({...salesTermForm, name: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" placeholder="e.g. Cash On Delivery" /></div>
               <div>
                 <label className="text-slate-400 block mb-1">Sale Type</label>
-                <select value={salesTermForm.type} onChange={e => setSalesTermForm({...salesTermForm, type: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={salesTermForm.type} onChange={e => setSalesTermForm({...salesTermForm, type: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   <option value="Paid">Paid</option>
                   <option value="Credit">Credit</option>
                   <option value="Layby">Layby</option>
-                </select>
+                </SearchableSelect>
               </div>
               <div><label className="text-slate-400 block mb-1">Days (for Credit / Layby)</label><input type="number" min="0" value={salesTermForm.days} onChange={e => setSalesTermForm({...salesTermForm, days: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white" /></div>
               <div className="flex gap-2">
@@ -10732,14 +12448,23 @@ export default function App() {
       )}
 
       {selectedPayroll && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4 print:bg-white print:static">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto print:bg-white print:text-black print:border-0 print:shadow-none">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto print:bg-white print:static">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto print:bg-white print:text-black print:border-0 print:shadow-none">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2 print:border-slate-300">
               <h4 className="font-bold text-white text-sm print:text-black">Payslip — {selectedPayroll.employeeName}</h4>
               <button onClick={() => setSelectedPayroll(null)} className="text-slate-400 print:hidden">✕</button>
             </div>
             <div id="printable-payroll" className="space-y-3 text-xs">
               <div className="text-center border-b-2 border-slate-700 pb-3 mb-3 print:border-black">
+                {shopProfile.logo ? (
+                  <div className="flex justify-center mb-2">
+                    <img
+                      src={shopProfile.logo}
+                      alt={shopProfile.name}
+                      className="h-12 max-h-12 max-w-[150px] object-contain mx-auto print:block"
+                    />
+                  </div>
+                ) : null}
                 <h2 className="text-xl font-bold text-white print:text-black">{shopProfile.name}</h2>
                 {shopProfile.tagline && <p className="text-slate-300 print:text-black mt-1">{shopProfile.tagline}</p>}
                 <p className="text-slate-300 print:text-black mt-1">{shopProfile.location}{shopProfile.phone ? ` | ${shopProfile.phone}` : ''}</p>
@@ -10775,10 +12500,10 @@ export default function App() {
             </div>
             <div className="flex flex-wrap gap-2 pt-2 print:hidden items-center">
               <label className="text-[10px] text-slate-400">Paper</label>
-              <select id="payroll-paper-size" defaultValue="A4" className="bg-slate-950 border border-slate-700 rounded text-xs text-white px-2 py-1">
+              <SearchableSelect id="payroll-paper-size" defaultValue="A4" className="bg-slate-950 border border-slate-700 rounded text-xs text-white px-2 py-1">
                 <option value="A4">A4</option>
                 <option value="A5">A5</option>
-              </select>
+              </SearchableSelect>
               {(isAdminUser || canUpdate('payroll')) && <button onClick={() => {
                 const updated = { ...selectedPayroll, netPay: (parseFloat(selectedPayroll.basicSalary)||0) + (parseFloat(selectedPayroll.allowances)||0) - (parseFloat(selectedPayroll.deductions)||0) };
                 setPayrollRecords(payrollRecords.map(p => p.id === updated.id ? updated : p));
@@ -10797,9 +12522,9 @@ export default function App() {
               {(isAdminUser || canDelete('payroll')) && <button onClick={() => handleDeletePayroll(selectedPayroll.id)} className="px-4 py-2 bg-red-500/20 text-red-400 font-bold rounded text-xs">Delete</button>}
               {selectedPayroll.status !== 'Paid' && (isAdminUser || canUpdate('payroll')) && (
                 <>
-                  <select value={payrollPayMethod} onChange={e => setPayrollPayMethod(e.target.value)} className="bg-slate-950 border border-slate-700 rounded text-xs text-white px-2">
-                    {asArr(paymentMethods).map(pm => <option key={pm.id} value={pm.name}>{pm.name}</option>)}
-                  </select>
+                  <SearchableSelect value={payrollPayMethod} onChange={e => setPayrollPayMethod(e.target.value)} className="bg-slate-950 border border-slate-700 rounded text-xs text-white px-2">
+                    {paymentMethods.map(pm => <option key={pm.id} value={pm.name}>{pm.name}</option>)}
+                  </SearchableSelect>
                   <button onClick={() => { handleMarkPayrollPaid(selectedPayroll, payrollPayMethod); setSelectedPayroll({...selectedPayroll, status: 'Paid', paidDate: new Date().toISOString().split('T')[0], paymentMethod: payrollPayMethod}); }} className="px-4 py-2 bg-emerald-500/20 text-emerald-400 font-bold rounded text-xs">Mark Paid</button>
                 </>
               )}
@@ -10809,8 +12534,8 @@ export default function App() {
       )}
 
       {payrollModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 p-4 sm:p-6 rounded-2xl w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h4 className="font-bold text-white text-sm">Generate Payroll</h4>
               <button onClick={() => setPayrollModalOpen(false)} className="text-slate-400">✕</button>
@@ -10818,10 +12543,10 @@ export default function App() {
             <div className="space-y-3 text-xs">
               <div>
                 <label className="text-slate-400 block mb-1">Employee *</label>
-                <select value={payrollForm.employeeId} onChange={e => setPayrollForm({...payrollForm, employeeId: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
+                <SearchableSelect value={payrollForm.employeeId} onChange={e => setPayrollForm({...payrollForm, employeeId: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white">
                   <option value="">Select employee</option>
                   {employees.filter(e => e.status === 'Active').map(e => <option key={e.id} value={e.id}>{e.name} — {shopProfile.currency} {(parseFloat(e.salary)||0).toLocaleString()}</option>)}
-                </select>
+                </SearchableSelect>
               </div>
               <div>
                 <label className="text-slate-400 block mb-1">Period (YYYY-MM) *</label>

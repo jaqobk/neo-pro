@@ -1,41 +1,97 @@
-# React + Vite
+# A40 ERP — Cloudflare Pages + D1 Deployment & GitHub Guide
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+This project is a multi-tenant retail POS, inventory, accounting ledger, purchase order, and HR management ERP built for **Cloudflare Pages** with **Cloudflare D1 (SQLite database)**.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 1. Quick Deploy to Cloudflare Pages via GitHub
 
-## React Compiler
+When you push this repository to GitHub:
+1. Log in to [Cloudflare Dashboard](https://dash.cloudflare.com/) → **Compute (Workers & Pages)** → **Pages** → **Connect to Git**.
+2. Select your repository.
+3. Configure build settings:
+   - **Framework preset**: `None` or `Vite`
+   - **Build command**: `npm run build`
+   - **Build output directory**: `dist`
+4. Under **Environment variables (Production)**:
+   - `SUPER_ADMIN_NAME`: `platform` (or your chosen platform super-admin username)
+   - `SUPER_ADMIN_PIN`: `1234` (or your secure platform PIN)
+5. Click **Save and Deploy**.
+6. After initial deployment, go to **Settings** → **Functions** → **D1 database bindings**:
+   - Variable name: `DB`
+   - D1 database: select your D1 database (e.g. `kingdb`).
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+---
 
-## Expanding the Oxlint configuration
+## 2. Deploy via Wrangler CLI
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+If deploying from your terminal:
 
-## NEO ERP — production checklist
+```bash
+# 1. Login to Cloudflare
+npx wrangler login
 
-### Cloudflare
-- Set secrets: `SUPER_ADMIN_NAME`, `SUPER_ADMIN_PIN` (strong PIN).
-- Bind D1 database in `wrangler.toml`.
-- Deploy Pages + Functions together; run migrations via first API hit (`ensureAuthTables`).
+# 2. (Optional) Create a D1 database if you don't already have one
+npx wrangler d1 create kingdb
 
-### Backups
-- Use **Settings → Backup & Restore** (tenant cloud backup + local JSON).
-- Schedule weekly exports; store off-platform.
+# 3. Apply the database schema to your remote D1 database
+npx wrangler d1 execute kingdb --remote --file=./schema.sql
 
-### Multi-location
-- Plan limits: Starter 1 / Business 3 / Premium up to 20 locations.
-- Roles: set **Allowed locations** list; empty = all locations.
-- Transfer stock: **Inventory → Transfer between locations**.
+# 4. Build the frontend
+npm run build
 
-### Support
-- Platform console: suspend/activate shops, record payments, Open as shop (2h).
-- Offline POS sales queue auto-retries when the browser is online again.
+# 5. Deploy Pages project
+npx wrangler pages deploy dist --project-name=neo-erp
+```
 
-### Compliance notes
-- eTIMS / KRA fields are local settings only until a certified device/API is connected.
-- Loyalty points are shop-configured; not a payments network.
+---
 
+## 3. How to Create and Access via a Custom D1 User
+
+You can create users directly via D1 SQL query or via the ERP interface:
+
+### Option A: Using Wrangler D1 CLI (Direct SQL)
+
+You can run SQL directly against your Cloudflare D1 database:
+
+```bash
+# Add an Admin user with a 4-digit PIN (e.g., PIN: 4321):
+npx wrangler d1 execute kingdb --remote --command="INSERT INTO users (id, name, role, pin, phone, status, tenantId) VALUES ('u-my-admin', 'MyCustomAdmin', 'Admin', '4321', '+254 700 000000', 'Active', 'tenant-default');"
+```
+
+> **Note on PIN encryption:** The backend automatically upgrades plain PINs (e.g. `'4321'`) to PBKDF2 secure hashes on the very first login, so you can safely insert plain text PINs directly via D1.
+
+To verify existing users in your D1 database:
+```bash
+npx wrangler d1 execute kingdb --remote --command="SELECT id, name, role, status, tenantId FROM users;"
+```
+
+### Option B: Built-in Platform Super-Admin
+
+The platform has a built-in super-admin configured via Cloudflare Environment Variables:
+- **Username**: `platform` (or value of `SUPER_ADMIN_NAME`)
+- **PIN**: `1234` (or value of `SUPER_ADMIN_PIN`)
+- Switch to **Platform Console** on the login screen to manage all tenant shops and users.
+
+---
+
+## 4. Git & GitHub Setup
+
+To initialize and push this repo to your GitHub account:
+
+```bash
+# Initialize git if not already initialized
+git init -b main
+
+# Add all files
+git add .
+
+# Commit
+git commit -m "Complete A40 ERP: Cloudflare Pages + D1 integration"
+
+# Link to your GitHub repository (replace with your repo URL)
+git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
+
+# Push to GitHub
+git push -u origin main
+```

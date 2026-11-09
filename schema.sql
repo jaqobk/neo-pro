@@ -1,11 +1,14 @@
 -- schema.sql
 CREATE TABLE IF NOT EXISTS shop_profile (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
+  id TEXT PRIMARY KEY,
   name TEXT,
   tagline TEXT,
   currency TEXT,
   phone TEXT,
-  location TEXT
+  location TEXT,
+  logo TEXT,
+  creditPolicy TEXT DEFAULT 'warn',
+  tenantId TEXT
 );
 
 CREATE TABLE IF NOT EXISTS inventory (
@@ -23,6 +26,8 @@ CREATE TABLE IF NOT EXISTS inventory (
   size TEXT,
   colour TEXT,
   wholesalePrice REAL,
+  varianceValues TEXT,
+  branchId TEXT,
   tenantId TEXT
 );
 
@@ -31,7 +36,16 @@ CREATE TABLE IF NOT EXISTS customers (
   name TEXT,
   phone TEXT,
   location TEXT,
-  eligibility TEXT 
+  eligibility TEXT,
+  loyaltyPoints REAL DEFAULT 0,
+  creditLimit REAL DEFAULT 0,
+  salesTermId TEXT,
+  paymentTerm TEXT,
+  tags TEXT,
+  priceList TEXT,
+  kraPin TEXT,
+  branchId TEXT,
+  tenantId TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sales (
@@ -53,7 +67,10 @@ CREATE TABLE IF NOT EXISTS sales (
   taxName TEXT,
   taxInclusive INTEGER DEFAULT 0,
   returnHistory TEXT,
-  originalSaleType TEXT
+  paymentHistory TEXT,
+  originalSaleType TEXT,
+  branchId TEXT,
+  tenantId TEXT
 );
 
 CREATE TABLE IF NOT EXISTS expenses (
@@ -69,26 +86,32 @@ CREATE TABLE IF NOT EXISTS expenses (
   paidAmount REAL,
   balanceDue REAL,
   paymentStatus TEXT,
-  taxAmount REAL
+  paymentHistory TEXT,
+  taxAmount REAL,
+  branchId TEXT,
+  tenantId TEXT
 );
 
 CREATE TABLE IF NOT EXISTS categories (
   id TEXT PRIMARY KEY,
   name TEXT,
-  status TEXT
+  status TEXT,
+  tenantId TEXT
 );
 
 CREATE TABLE IF NOT EXISTS expense_categories (
   id TEXT PRIMARY KEY,
   name TEXT,
-  status TEXT
+  status TEXT,
+  tenantId TEXT
 );
 
 CREATE TABLE IF NOT EXISTS item_statuses (
   id TEXT PRIMARY KEY,
   name TEXT,
   status TEXT,
-  canSell BOOLEAN
+  canSell BOOLEAN,
+  tenantId TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -97,13 +120,17 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT,
   pin TEXT,
   phone TEXT,
-  status TEXT
+  status TEXT,
+  photo TEXT,
+  allowedBranches TEXT,
+  tenantId TEXT
 );
 
 CREATE TABLE IF NOT EXISTS roles (
   id TEXT PRIMARY KEY,
   name TEXT,
-  privileges TEXT
+  privileges TEXT,
+  tenantId TEXT
 );
 
 CREATE TABLE IF NOT EXISTS suppliers (
@@ -113,7 +140,9 @@ CREATE TABLE IF NOT EXISTS suppliers (
   email TEXT,
   location TEXT,
   creditTermType TEXT,
-  creditDays INTEGER
+  creditDays INTEGER,
+  branchId TEXT,
+  tenantId TEXT
 );
 
 CREATE TABLE IF NOT EXISTS purchase_orders (
@@ -137,31 +166,34 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   returnedQty INTEGER DEFAULT 0,
   returnHistory TEXT,
   taxInclusive INTEGER DEFAULT 0,
-  paymentHistory TEXT
+  paymentHistory TEXT,
+  received INTEGER DEFAULT 0,
+  createdBy TEXT,
+  cogsBooked REAL DEFAULT 0,
+  items TEXT,
+  groupId TEXT,
+  branchId TEXT,
+  tenantId TEXT
 );
 
--- Append to the bottom of schema.sql
-CREATE TABLE IF NOT EXISTS website_settings (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  fontFamily TEXT,
-  baseFontSize INTEGER,
-  primaryColor TEXT,
-  headingWeight TEXT,
-  headingTransform TEXT,
-  cardGlow TEXT,
-  catalogHeight INTEGER,
-  catalogObjectFit TEXT,
-  heroTitle TEXT,
-  heroSubtitle TEXT,
-  heroImage TEXT,
-  aboutTitle TEXT,
-  aboutText TEXT,
-  contactAddress TEXT,
-  footerText TEXT,
-  whatsappPhone TEXT
+CREATE TABLE IF NOT EXISTS tenant_settings (
+  id TEXT PRIMARY KEY,
+  tenantId TEXT UNIQUE,
+  paymentMethods TEXT,
+  salesTerms TEXT,
+  loyalty TEXT,
+  etims TEXT,
+  salesTargets TEXT,
+  tasks TEXT,
+  cashups TEXT,
+  auditLog TEXT,
+  itemVariances TEXT,
+  poApprovalLimit REAL DEFAULT 0,
+  returnRequests TEXT,
+  creditPolicy TEXT DEFAULT 'warn',
+  updatedAt INTEGER
 );
 
--- HR Module Tables
 CREATE TABLE IF NOT EXISTS employees (
   id TEXT PRIMARY KEY,
   name TEXT,
@@ -178,6 +210,7 @@ CREATE TABLE IF NOT EXISTS employees (
   leaveBalance REAL,
   managerId TEXT,
   userId TEXT,
+  branchId TEXT,
   tenantId TEXT
 );
 
@@ -195,7 +228,11 @@ CREATE TABLE IF NOT EXISTS leave_requests (
   createdAt TEXT,
   managerId TEXT,
   approverId TEXT,
-  managerName TEXT
+  managerName TEXT,
+  decidedAt TEXT,
+  balanceDeducted INTEGER DEFAULT 0,
+  branchId TEXT,
+  tenantId TEXT
 );
 
 CREATE TABLE IF NOT EXISTS payroll (
@@ -214,25 +251,29 @@ CREATE TABLE IF NOT EXISTS payroll (
   allowanceBreakdown TEXT,
   deductionBreakdown TEXT,
   allowanceOtherSpec TEXT,
-  deductionOtherSpec TEXT
+  deductionOtherSpec TEXT,
+  branchId TEXT,
+  tenantId TEXT
 );
 
 CREATE TABLE IF NOT EXISTS hr_settings (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
+  id TEXT PRIMARY KEY,
   defaultAnnualLeave REAL,
   leaveTypes TEXT,
   departments TEXT,
   payrollCycle TEXT,
-  payDay INTEGER
+  payDay INTEGER,
+  tenantId TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tax_settings (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
+  id TEXT PRIMARY KEY,
   salesTaxEnabled INTEGER,
   salesTaxRate REAL,
   salesTaxName TEXT,
   purchaseTaxEnabled INTEGER,
   purchaseTaxRate REAL,
   purchaseTaxName TEXT,
-  taxInclusive INTEGER
+  taxInclusive INTEGER,
+  tenantId TEXT
 );

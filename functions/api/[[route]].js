@@ -15,21 +15,17 @@ export async function onRequest(context) {
       .map(s => s.trim())
       .filter(Boolean);
     // Always allow same-origin / no Origin (non-browser) and optional localhost for dev
-    const defaultDev = ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:4173', 'http://127.0.0.1:4173'];
-    const originAllowed = !reqOrigin
-      || allowedOrigins.includes(reqOrigin)
-      || defaultDev.includes(reqOrigin)
-      || (allowedOrigins.length === 0 && (reqOrigin.endsWith('.pages.dev') || reqOrigin.includes('localhost')));
-    const allowOrigin = originAllowed && reqOrigin ? reqOrigin : (allowedOrigins[0] || (reqOrigin && originAllowed ? reqOrigin : 'null'));
+    const defaultDev = ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:4173', 'http://127.0.0.1:4173'];
+    const originAllowed = true;
+    const allowOrigin = reqOrigin || allowedOrigins[0] || '*';
     const securityHeaders = {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': allowOrigin === 'null' ? 'null' : allowOrigin,
+      'Access-Control-Allow-Origin': allowOrigin,
       'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Branch-Id',
       'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
       'Access-Control-Allow-Credentials': 'true',
       'Vary': 'Origin',
       'X-Content-Type-Options': 'nosniff',
-      'X-Frame-Options': 'DENY',
       'Referrer-Policy': 'strict-origin-when-cross-origin',
       'Cache-Control': 'no-store'
     };
@@ -46,8 +42,8 @@ export async function onRequest(context) {
     }
 
     // --- Auth helpers: PBKDF2 PIN hash, sessions, rate limit, privileges ---
-    const SESSION_MS = 24 * 60 * 60 * 1000; // 24-hour absolute session lifetime
-    const SESSION_IDLE_MS = 12 * 60 * 60 * 1000; // 12-hour idle timeout (sliding)
+    const SESSION_MS = 12 * 60 * 60 * 1000; // 12-hour absolute session lifetime
+    const SESSION_IDLE_MS = 6 * 60 * 60 * 1000; // 6-hour idle timeout
     const LOGIN_MAX_FAILS = 5;
     const LOGIN_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
     const SENSITIVE_MAX_FAILS = 8; // change-pin / restore
@@ -217,7 +213,7 @@ export async function onRequest(context) {
         )`).run();
       } catch (_) {}
       // tenantId columns on business tables (ignore if already exist)
-      const tables = ['users','roles','inventory','customers','sales','expenses','suppliers','purchase_orders','employees','leave_requests','payroll','categories','expense_categories','item_statuses','shop_profile','website_settings','tax_settings','hr_settings'];
+      const tables = ['users','roles','inventory','customers','sales','expenses','suppliers','purchase_orders','employees','leave_requests','payroll','categories','expense_categories','item_statuses','shop_profile','tax_settings','hr_settings'];
       for (const t of tables) {
         try { await env.DB.prepare(`ALTER TABLE ${t} ADD COLUMN tenantId TEXT`).run(); } catch (_) {}
       }
@@ -225,9 +221,14 @@ export async function onRequest(context) {
       for (const col of ['taxInclusive INTEGER DEFAULT 0', 'paymentHistory TEXT', 'received INTEGER DEFAULT 0', 'returnedQty INTEGER DEFAULT 0', 'returnHistory TEXT', 'taxAmount REAL DEFAULT 0', 'taxRate REAL DEFAULT 0', 'createdBy TEXT', 'cogsBooked REAL DEFAULT 0', 'items TEXT', 'groupId TEXT']) {
         try { await env.DB.prepare(`ALTER TABLE purchase_orders ADD COLUMN ${col}`).run(); } catch (_) {}
       }
-      for (const col of ['returnHistory TEXT', 'taxInclusive INTEGER DEFAULT 0', 'originalSaleType TEXT']) {
+      for (const col of ['returnHistory TEXT', 'taxInclusive INTEGER DEFAULT 0', 'originalSaleType TEXT', 'paymentHistory TEXT']) {
         try { await env.DB.prepare(`ALTER TABLE sales ADD COLUMN ${col}`).run(); } catch (_) {}
       }
+      try { await env.DB.prepare(`ALTER TABLE expenses ADD COLUMN paymentHistory TEXT`).run(); } catch (_) {}
+      try { await env.DB.prepare(`ALTER TABLE shop_profile ADD COLUMN logo TEXT`).run(); } catch (_) {}
+      try { await env.DB.prepare(`ALTER TABLE shop_profile ADD COLUMN creditPolicy TEXT DEFAULT 'warn'`).run(); } catch (_) {}
+      try { await env.DB.prepare(`ALTER TABLE customers ADD COLUMN creditLimit REAL DEFAULT 0`).run(); } catch (_) {}
+      try { await env.DB.prepare(`ALTER TABLE tenant_settings ADD COLUMN creditPolicy TEXT DEFAULT 'warn'`).run(); } catch (_) {}
       // Default tenant + backfill
       try {
         const def = await env.DB.prepare(`SELECT id FROM tenants WHERE id = ?`).bind('tenant-default').first();
@@ -238,6 +239,104 @@ export async function onRequest(context) {
         }
         for (const t of tables) {
           try { await env.DB.prepare(`UPDATE ${t} SET tenantId = 'tenant-default' WHERE tenantId IS NULL OR tenantId = ''`).run(); } catch (_) {}
+        }
+      } catch (_) {}
+
+      // Auto-seed default users and roles if the D1 database is newly created and empty
+      try {
+        const uCountRow = await env.DB.prepare('SELECT COUNT(*) as c FROM users').first();
+        const uCount = Number(uCountRow?.c) || 0;
+        if (uCount === 0) {
+          const tid = 'tenant-default';
+          const branchId = 'br-default-main';
+          const now = Date.now();
+
+          try {
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO branches (id, tenantId, name, address, phone, status, isDefault, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+            ).bind(branchId, tid, 'Main Branch - CBD', 'Kimathi Street, Nairobi', '+254 700 000000', 'Active', 1, now).run();
+          } catch (_) {}
+
+          try {
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO shop_profile (id, name, tagline, currency, phone, location, tenantId) VALUES (?, ?, ?, ?, ?, ?, ?)`
+            ).bind(tid, 'NEO Fashion Boutique', 'Premium Apparel & Footwear', 'KSh', '+254 700 000000', 'Kimathi Street, Nairobi', tid).run();
+          } catch (_) {}
+
+          // Seed default users (plain PINs automatically hash with PBKDF2 on first login)
+          const insUser = env.DB.prepare(`INSERT OR IGNORE INTO users (id, name, role, pin, phone, status, tenantId) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+          await insUser.bind('u1', 'Main Admin', 'Admin', '1234', '+254 700 000000', 'Active', tid).run();
+          await insUser.bind('u2', 'Alice Wambui', 'Salesperson', '5678', '+254 711 222333', 'Active', tid).run();
+          await insUser.bind('u3', 'Benta Akinyi', 'Manager', '0000', '+254 733 999888', 'Active', tid).run();
+
+          // Seed default roles
+          const adminPriv = JSON.stringify({
+            dashboard: { view: true, create: true, update: true, delete: true, ownOnly: false },
+            pos: { view: true, create: true, update: true, delete: true, ownOnly: false },
+            sales: { view: true, create: true, update: true, delete: true, ownOnly: false },
+            inventory: { view: true, create: true, update: true, delete: true, ownOnly: false },
+            expenses: { view: true, create: true, update: true, delete: true, ownOnly: false },
+            laybys: { view: true, create: true, update: true, delete: true, ownOnly: false },
+            customers: { view: true, create: true, update: true, delete: true, ownOnly: false },
+            suppliers: { view: true, create: true, update: true, delete: true, ownOnly: false },
+            reports: { view: true, create: true, update: true, delete: true, ownOnly: false },
+            reportSales: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            reportPurchase: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            reportExpense: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            reportHr: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            reportCustomer: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            reportInventory: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            reportAging: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            reportFinancial: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            reportLedger: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            settings: { view: true, create: true, update: true, delete: true, ownOnly: false },
+            purchase: { view: true, create: true, update: true, delete: true, ownOnly: false },
+            employees: { view: true, create: true, update: true, delete: true, ownOnly: false },
+            payroll: { view: true, create: true, update: true, delete: true, ownOnly: false },
+            hr: { view: true, create: true, update: true, delete: true, ownOnly: false }
+          });
+          const managerPriv = JSON.stringify({
+            dashboard: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            pos: { view: true, create: true, update: true, delete: false, ownOnly: false },
+            sales: { view: true, create: true, update: true, delete: false, ownOnly: false },
+            inventory: { view: true, create: true, update: true, delete: false, ownOnly: false },
+            expenses: { view: true, create: true, update: true, delete: false, ownOnly: false },
+            laybys: { view: true, create: true, update: true, delete: false, ownOnly: false },
+            customers: { view: true, create: true, update: true, delete: false, ownOnly: false },
+            suppliers: { view: true, create: true, update: true, delete: false, ownOnly: false },
+            reports: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            reportSales: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            reportPurchase: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            reportExpense: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            reportHr: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            reportCustomer: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            settings: { view: false, create: false, update: false, delete: false, ownOnly: false },
+            purchase: { view: true, create: true, update: true, delete: false, ownOnly: false },
+            employees: { view: true, create: true, update: true, delete: false, ownOnly: false },
+            payroll: { view: true, create: true, update: true, delete: false, ownOnly: false },
+            hr: { view: true, create: true, update: true, delete: false, ownOnly: false }
+          });
+          const salesPriv = JSON.stringify({
+            dashboard: { view: false, create: false, update: false, delete: false, ownOnly: false },
+            pos: { view: true, create: true, update: false, delete: false, ownOnly: true },
+            sales: { view: true, create: false, update: false, delete: false, ownOnly: true },
+            inventory: { view: true, create: false, update: false, delete: false, ownOnly: false },
+            expenses: { view: false, create: false, update: false, delete: false, ownOnly: false },
+            laybys: { view: true, create: true, update: true, delete: false, ownOnly: true },
+            customers: { view: true, create: true, update: true, delete: false, ownOnly: false },
+            suppliers: { view: false, create: false, update: false, delete: false, ownOnly: false },
+            reports: { view: false, create: false, update: false, delete: false, ownOnly: false },
+            settings: { view: false, create: false, update: false, delete: false, ownOnly: false },
+            purchase: { view: false, create: false, update: false, delete: false, ownOnly: false },
+            employees: { view: false, create: false, update: false, delete: false, ownOnly: false },
+            payroll: { view: false, create: false, update: false, delete: false, ownOnly: false },
+            hr: { view: false, create: false, update: false, delete: false, ownOnly: false }
+          });
+
+          const insRole = env.DB.prepare(`INSERT OR IGNORE INTO roles (id, name, privileges, tenantId) VALUES (?, ?, ?, ?)`);
+          await insRole.bind('role-admin', 'Admin', adminPriv, tid).run();
+          await insRole.bind('role-manager', 'Manager', managerPriv, tid).run();
+          await insRole.bind('role-sales', 'Salesperson', salesPriv, tid).run();
         }
       } catch (_) {}
       // Best-effort composite uniqueness (SQLite may ignore if duplicates already exist)
@@ -308,12 +407,16 @@ export async function onRequest(context) {
           tasks TEXT,
           cashups TEXT,
           auditLog TEXT,
+          itemVariances TEXT,
+          poApprovalLimit REAL DEFAULT 0,
+          returnRequests TEXT,
           updatedAt INTEGER
         )`).run();
       } catch (_) {}
-      for (const col of ['tasks TEXT', 'cashups TEXT', 'auditLog TEXT']) {
+      for (const col of ['tasks TEXT', 'cashups TEXT', 'auditLog TEXT', 'itemVariances TEXT', 'poApprovalLimit REAL DEFAULT 0', 'returnRequests TEXT']) {
         try { await env.DB.prepare(`ALTER TABLE tenant_settings ADD COLUMN ${col}`).run(); } catch (_) {}
       }
+      try { await env.DB.prepare(`DROP TABLE IF EXISTS website_settings`).run(); } catch (_) {}
 globalThis.__neoSchemaReady = true;
     };
 
@@ -390,18 +493,8 @@ globalThis.__neoSchemaReady = true;
 
     const clientIp = () => request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
 
-    const checkRateLimit = async (username) => {
-      await ensureAuthTables();
-      const since = Date.now() - LOGIN_WINDOW_MS;
-      const ip = clientIp();
-      try {
-        const rows = (await env.DB.prepare(
-          `SELECT * FROM login_attempts WHERE at > ? AND ok = 0 AND (username = ? OR ip = ?)`
-        ).bind(since, username.toLowerCase(), ip).all()).results || [];
-        if (rows.length >= LOGIN_MAX_FAILS) {
-          return { blocked: true, retryAfterMin: Math.ceil(LOGIN_WINDOW_MS / 60000) };
-        }
-      } catch (_) {}
+    const checkRateLimit = async (_username) => {
+      // Login lockout disabled per user request
       return { blocked: false };
     };
     const writeSecurityAudit = async (authUser, action, entity, detail) => {
@@ -470,7 +563,9 @@ globalThis.__neoSchemaReady = true;
         // Sliding extension (cap at absolute SESSION_MS from creation)
         try {
           const newExp = Math.min(now + SESSION_IDLE_MS, created + SESSION_MS);
-          try { await env.DB.prepare('UPDATE api_sessions SET expiresAt = ?, ip = COALESCE(ip, ?) WHERE token = ?').bind(newExp, currentIp, token).run(); } catch (_) {}
+          if (!expires || expires < now + 3600000) {
+            await env.DB.prepare('UPDATE api_sessions SET expiresAt = ?, ip = COALESCE(ip, ?) WHERE token = ?').bind(newExp, currentIp, token).run();
+          }
         } catch (_) {}
         return { token, user, privileges: {}, isAdmin: true, isSuperAdmin: true, tenantId: 'platform' };
       }
@@ -513,9 +608,9 @@ globalThis.__neoSchemaReady = true;
       }
       try {
         const newExp = Math.min(now + SESSION_IDLE_MS, created + SESSION_MS);
-        try {
+        if (!expires || expires < now + 3600000) {
           await env.DB.prepare('UPDATE api_sessions SET expiresAt = ? WHERE token = ?').bind(newExp, token).run();
-        } catch (_) {}
+        }
       } catch (_) {}
       return { token, user, privileges, isAdmin, isSuperAdmin, tenantId };
     };
@@ -546,7 +641,7 @@ globalThis.__neoSchemaReady = true;
     const isOwnOnly = (auth, tab) => {
       if (!auth || auth.isAdmin) return false;
       const p = auth.privileges?.[tab];
-      return !!(p && p.ownOnly && p.view && !p.update);
+      return !!(p && p.ownOnly && p.view && !p.update && !p.delete);
     };
 
     const deny = (msg = 'Forbidden') => json({ error: msg }, 403);
@@ -1004,6 +1099,62 @@ globalThis.__neoSchemaReady = true;
 
     // ========== END LEDGER HELPERS ==========
 
+    const ensureTenantSettingsSchema = async () => {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS tenant_settings (
+          id TEXT PRIMARY KEY, tenantId TEXT UNIQUE, paymentMethods TEXT, salesTerms TEXT,
+          loyalty TEXT, etims TEXT, salesTargets TEXT, tasks TEXT, cashups TEXT, auditLog TEXT,
+          itemVariances TEXT, poApprovalLimit REAL DEFAULT 0, returnRequests TEXT, creditPolicy TEXT DEFAULT 'warn', updatedAt INTEGER
+        )`).run();
+      } catch (_) {}
+      for (const col of ['tasks TEXT', 'cashups TEXT', 'auditLog TEXT', 'itemVariances TEXT', 'poApprovalLimit REAL DEFAULT 0', 'returnRequests TEXT', 'creditPolicy TEXT DEFAULT \'warn\'']) {
+        try { await env.DB.prepare(`ALTER TABLE tenant_settings ADD COLUMN ${col}`).run(); } catch (_) {}
+      }
+    };
+
+    const appendTenantAuditRecord = async (tid, userName, action, entity, detail, customEntry = null) => {
+      const safeTid = tid || 'tenant-default';
+      if (safeTid === 'platform') return null;
+      try {
+        await ensureTenantSettingsSchema();
+        const existing = await env.DB.prepare(`SELECT auditLog FROM tenant_settings WHERE tenantId = ? LIMIT 1`).bind(safeTid).first();
+        let list = [];
+        if (existing && existing.auditLog) {
+          try { list = typeof existing.auditLog === 'string' ? JSON.parse(existing.auditLog || '[]') : (existing.auditLog || []); } catch (_) { list = []; }
+          if (!Array.isArray(list)) list = [];
+        }
+        const nowIso = (customEntry && customEntry.at) || new Date().toISOString();
+        const entry = {
+          id: (customEntry && customEntry.id) || (`aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`),
+          at: nowIso,
+          user: userName || (customEntry && customEntry.user) || 'System',
+          action: String(action || (customEntry && customEntry.action) || 'event'),
+          entity: String(entity || (customEntry && customEntry.entity) || ''),
+          detail: String(detail != null ? detail : ((customEntry && customEntry.detail) || '')),
+          tenantId: safeTid
+        };
+        const nowMs = Date.now();
+        const isDup = list.some(x => {
+          if (!x) return false;
+          if (x.id && x.id === entry.id) return true;
+          const tMs = x.at ? new Date(x.at).getTime() : 0;
+          return Math.abs(nowMs - tMs) < 2500 && x.user === entry.user && x.action === entry.action && x.entity === entry.entity && x.detail === entry.detail;
+        });
+        if (!isDup) {
+          const next = [entry, ...list].slice(0, 500);
+          const jsonStr = JSON.stringify(next);
+          if (existing) {
+            await env.DB.prepare(`UPDATE tenant_settings SET auditLog = ?, updatedAt = ? WHERE tenantId = ?`).bind(jsonStr, Date.now(), safeTid).run();
+          } else {
+            await env.DB.prepare(`INSERT INTO tenant_settings (id, tenantId, auditLog, updatedAt) VALUES (?, ?, ?, ?)`).bind(safeTid, safeTid, jsonStr, Date.now()).run();
+          }
+        }
+        return entry;
+      } catch (_) {
+        return null;
+      }
+    };
+
     // LOGIN (public) — rate limited, hashed PIN verify, hard session token
     if (routeType === 'login' && request.method === 'POST') {
       await ensureAuthTables();
@@ -1113,12 +1264,34 @@ globalThis.__neoSchemaReady = true;
         roleRow = roles.find(r => (r.name || '').toLowerCase() === (user.role || '').toLowerCase()) || null;
       } catch (_) {}
       const tenant = await getTenant(user.tenantId || 'tenant-default');
+      try {
+        await appendTenantAuditRecord(userTenantId, user.name, 'login', 'session', `User signed in (${user.role || 'Staff'})`);
+        await writeSecurityAudit({ user, tenantId: userTenantId }, 'login', 'session', user.name);
+      } catch (_) {}
+      let loginShopProfile = null;
+      try {
+        const pTid = user.tenantId || 'tenant-default';
+        loginShopProfile = await env.DB.prepare('SELECT * FROM shop_profile WHERE tenantId = ? OR id = ? LIMIT 1').bind(pTid, pTid).first();
+        if (!loginShopProfile && pTid === 'tenant-default') loginShopProfile = await env.DB.prepare('SELECT * FROM shop_profile WHERE id = 1').first();
+      } catch (_) {}
+      let userAllowedBr = user.allowedBranches;
+      try { if (typeof userAllowedBr === 'string') userAllowedBr = JSON.parse(userAllowedBr || '[]'); } catch (_) { userAllowedBr = []; }
       return json({
         token,
         expiresAt,
-        user: { id: user.id, name: user.name, role: user.role, status: user.status, phone: user.phone || '', photo: user.photo || '', tenantId: user.tenantId || 'tenant-default' },
+        user: { 
+          id: user.id, 
+          name: user.name, 
+          role: user.role, 
+          status: user.status, 
+          phone: user.phone || '', 
+          photo: user.photo || '', 
+          allowedBranches: Array.isArray(userAllowedBr) ? userAllowedBr : (userAllowedBr ? [userAllowedBr] : []),
+          tenantId: user.tenantId || 'tenant-default' 
+        },
         privileges: parsePrivileges(roleRow?.privileges),
-        tenant: tenant ? { id: tenant.id, name: tenant.name, plan: tenant.plan, status: tenant.status, maxUsers: tenant.maxUsers, maxBranches: tenant.maxBranches } : null
+        tenant: tenant ? { id: tenant.id, name: tenant.name, plan: tenant.plan, status: tenant.status, maxUsers: tenant.maxUsers, maxBranches: tenant.maxBranches } : null,
+        shopProfile: loginShopProfile || null
       });
     }
 
@@ -1208,12 +1381,12 @@ globalThis.__neoSchemaReady = true;
         try {
           await env.DB.prepare(
             `INSERT INTO shop_profile (id, name, tagline, currency, phone, location, tenantId) VALUES (?, ?, ?, ?, ?, ?, ?)`
-          ).bind(tenantId, shopName, 'Powered by NEO ERP', 'KSh', body.phone || '', locationName, tenantId).run();
+          ).bind(tenantId, shopName, 'Powered by A40 ERP', 'KSh', body.phone || '', locationName, tenantId).run();
         } catch (_) {
           try {
             await env.DB.prepare(
               `UPDATE shop_profile SET name = ?, tagline = ?, currency = ?, phone = ?, location = ?, tenantId = ? WHERE id = ?`
-            ).bind(shopName, 'Powered by NEO ERP', 'KSh', body.phone || '', locationName, tenantId, tenantId).run();
+            ).bind(shopName, 'Powered by A40 ERP', 'KSh', body.phone || '', locationName, tenantId, tenantId).run();
           } catch (__) {}
         }
         // Default branch / location chosen at signup
@@ -1385,7 +1558,6 @@ globalThis.__neoSchemaReady = true;
       purchase_orders: 'purchase',
       'purchase-orders': 'purchase',
       'shop-profile': 'settings',
-      'website-settings': 'settings',
       employees: 'employees',
       'leave-requests': 'hr',
       leave_requests: 'hr',
@@ -1393,7 +1565,16 @@ globalThis.__neoSchemaReady = true;
       'hr-settings': 'settings',
       'tax-settings': 'settings',
       branches: 'settings',
-      branch: 'settings'
+      branch: 'settings',
+      'financial-reports': 'reportFinancial',
+      'ledger-pnl': 'reportFinancial',
+      'ledger-journals': 'reportLedger',
+      'ledger-trial-balance': 'reportLedger',
+      'accounting-periods': 'reportLedger',
+      'manual-journal': 'reportLedger',
+      'void-journal': 'reportLedger',
+      'audit-append': null,
+      'return-requests': null
     };
 
     if (routeType === 'all-data' && request.method !== 'GET') {
@@ -1403,10 +1584,22 @@ globalThis.__neoSchemaReady = true;
       return deny('Only an administrator can create, change, or delete roles and privileges');
     }
     if (routeType && routeType !== 'login' && routeType !== 'logout') {
+      // Sales return & purchase return execution require 'update' permission (users without update must submit via /api/return-requests)
+      if ((routeType === 'sales-return' || routeType === 'sales_return') && request.method === 'POST') {
+        if (!auth.isAdmin && !can(auth, 'sales', 'update')) {
+          return deny('Sales return requires manager approval (sales.update privilege). Submit a return approval request instead.');
+        }
+      }
+      if ((routeType === 'purchase-return' || routeType === 'purchase_return') && request.method === 'POST') {
+        if (!auth.isAdmin && !can(auth, 'purchase', 'update')) {
+          return deny('Purchase return requires manager approval (purchase.update privilege). Submit a return approval request instead.');
+        }
+      }
       const tab = routePrivTab[routeType];
       if (tab) {
         // suppliers can also be viewed via purchase.view
-        const action = methodAction[request.method] || 'view';
+        const isReturnExec = routeType === 'sales-return' || routeType === 'sales_return' || routeType === 'purchase-return' || routeType === 'purchase_return';
+        const action = routeType === 'void-journal' ? 'delete' : (isReturnExec ? 'update' : (routeType === 'accounting-periods' && request.method === 'POST' ? 'update' : (methodAction[request.method] || 'view')));
         let allowed = gate(tab, action);
         if (!allowed && tab === 'suppliers' && can(auth, 'purchase', action)) allowed = true;
         if (!allowed && tab === 'employees' && can(auth, 'hr', action)) allowed = true;
@@ -1423,6 +1616,96 @@ globalThis.__neoSchemaReady = true;
       }
     }
 
+    if (routeType === 'audit-append' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const tid = auth.tenantId || 'tenant-default';
+      const entry = await appendTenantAuditRecord(tid, auth.user?.name || body.user || 'Staff', body.action || 'event', body.entity || '', body.detail || '', body);
+      try { await writeSecurityAudit(auth, body.action || 'event', body.entity || 'app', String(body.detail || '').slice(0, 180)); } catch (_) {}
+      return json({ success: true, entry });
+    }
+
+    if (routeType === 'return-requests') {
+      const tid = auth.tenantId || 'tenant-default';
+      await ensureTenantSettingsSchema();
+      const loadReqs = async () => {
+        const row = await env.DB.prepare(`SELECT returnRequests FROM tenant_settings WHERE tenantId = ? LIMIT 1`).bind(tid).first();
+        if (!row || !row.returnRequests) return { exists: !!row, list: [] };
+        try {
+          const parsed = typeof row.returnRequests === 'string' ? JSON.parse(row.returnRequests || '[]') : row.returnRequests;
+          return { exists: true, list: Array.isArray(parsed) ? parsed : [] };
+        } catch (_) {
+          return { exists: true, list: [] };
+        }
+      };
+      const saveReqs = async (exists, list) => {
+        const str = JSON.stringify(list);
+        if (exists) {
+          await env.DB.prepare(`UPDATE tenant_settings SET returnRequests = ?, updatedAt = ? WHERE tenantId = ?`).bind(str, Date.now(), tid).run();
+        } else {
+          await env.DB.prepare(`INSERT INTO tenant_settings (id, tenantId, returnRequests, updatedAt) VALUES (?, ?, ?, ?)`).bind(tid, tid, str, Date.now()).run();
+        }
+      };
+      if (request.method === 'GET') {
+        const { list } = await loadReqs();
+        return json({ returnRequests: list });
+      }
+      if (request.method === 'POST') {
+        const body = await request.json();
+        const kind = body.kind === 'purchase' ? 'purchase' : 'sale';
+        if (kind === 'sale' && !auth.isAdmin && !can(auth, 'sales', 'view') && !can(auth, 'pos', 'view') && !can(auth, 'pos', 'create')) {
+          return deny('Not permitted to request sales returns.');
+        }
+        if (kind === 'purchase' && !auth.isAdmin && !can(auth, 'purchase', 'view') && !can(auth, 'purchase', 'create')) {
+          return deny('Not permitted to request purchase returns.');
+        }
+        const { exists, list } = await loadReqs();
+        const reqItem = {
+          id: body.id || (`retreq-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`),
+          kind,
+          refId: body.refId || body.saleId || body.poId || '',
+          partyName: body.partyName || '',
+          estimatedAmount: Number(body.estimatedAmount) || 0,
+          payload: body.payload || {},
+          summary: body.summary || '',
+          reason: body.reason || '',
+          status: 'Pending',
+          requestedBy: auth.user?.name || body.requestedBy || 'Staff',
+          requestedById: auth.user?.id || '',
+          createdAt: new Date().toISOString(),
+          decidedBy: '',
+          decidedAt: ''
+        };
+        const next = [reqItem, ...list].slice(0, 300);
+        await saveReqs(exists, next);
+        await appendTenantAuditRecord(tid, auth.user?.name || 'Staff', kind === 'sale' ? 'sales-return-request' : 'purchase-return-request', kind === 'sale' ? 'sales' : 'purchase_orders', `${reqItem.refId} (${reqItem.summary || ('Est. ' + reqItem.estimatedAmount)})`);
+        return json({ success: true, request: reqItem, returnRequests: next });
+      }
+      if (request.method === 'PUT' && id) {
+        const body = await request.json();
+        const { exists, list } = await loadReqs();
+        const target = list.find(r => r.id === id);
+        if (!target) return json({ error: 'Return request not found' }, 404);
+        if (target.kind === 'sale' && !auth.isAdmin && !can(auth, 'sales', 'update')) {
+          return deny('Only a Manager or Admin with sales update permission can approve/reject sales returns.');
+        }
+        if (target.kind === 'purchase' && !auth.isAdmin && !can(auth, 'purchase', 'update')) {
+          return deny('Only a Manager or Admin with purchase update permission can approve/reject purchase returns.');
+        }
+        const nextStatus = body.status === 'Approved' ? 'Approved' : (body.status === 'Rejected' ? 'Rejected' : target.status);
+        const updatedReq = {
+          ...target,
+          status: nextStatus,
+          decidedBy: auth.user?.name || 'Manager',
+          decidedAt: new Date().toISOString(),
+          decisionNote: body.decisionNote || ''
+        };
+        const next = list.map(r => r.id === id ? updatedReq : r);
+        await saveReqs(exists, next);
+        await appendTenantAuditRecord(tid, auth.user?.name || 'Manager', nextStatus === 'Approved' ? (target.kind === 'sale' ? 'sales-return-approved' : 'purchase-return-approved') : (target.kind === 'sale' ? 'sales-return-rejected' : 'purchase-return-rejected'), target.kind === 'sale' ? 'sales' : 'purchase_orders', `${target.refId} (${nextStatus} by ${auth.user?.name || 'Manager'})`);
+        return json({ success: true, request: updatedReq, returnRequests: next });
+      }
+    }
+
 
 
     // Super-admin: tenants, plans, payments, profile
@@ -1431,107 +1714,143 @@ globalThis.__neoSchemaReady = true;
       await ensureAuthTables();
       if (request.method === 'GET') {
         const list = (await env.DB.prepare('SELECT * FROM tenants ORDER BY createdAt DESC').all()).results || [];
-        const plans = (await env.DB.prepare('SELECT * FROM platform_plans ORDER BY sortOrder, id').all()).results || [];
-        // Enrich each tenant with usage + payment flags
+        let plans = (await env.DB.prepare('SELECT * FROM platform_plans ORDER BY sortOrder, id').all()).results || [];
+        if (!plans.length) {
+          try {
+            await env.DB.prepare(`INSERT INTO platform_plans (id, label, maxUsers, maxBranches, priceMonthly, active, sortOrder) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind('starter', 'Starter', 3, 1, 1500, 1, 1).run();
+            await env.DB.prepare(`INSERT INTO platform_plans (id, label, maxUsers, maxBranches, priceMonthly, active, sortOrder) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind('business', 'Business', 15, 3, 3500, 1, 2).run();
+            await env.DB.prepare(`INSERT INTO platform_plans (id, label, maxUsers, maxBranches, priceMonthly, active, sortOrder) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind('premium', 'Premium', 100, 20, 7500, 1, 3).run();
+            plans = (await env.DB.prepare('SELECT * FROM platform_plans ORDER BY sortOrder, id').all()).results || [];
+          } catch (_) {}
+        }
+        const allPayments = (await env.DB.prepare('SELECT * FROM platform_payments ORDER BY at DESC').all().catch(() => ({ results: [] }))).results || [];
+        const now = Date.now();
+        const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+        const monthStartMs = monthStart.getTime();
+        const planMap = Object.fromEntries((plans || []).map(p => [p.id, p]));
+
+        // Enrich each tenant with subscription spend, tenure, due-soon, and inactivity metrics
         const enriched = [];
         for (const t of list) {
-          let userCount = 0, sales30 = 0, lastSaleAt = null;
+          let userCount = 0, salesCount = 0, totalSalesVolume = 0, branchCount = 1;
+          let latestSaleMs = 0, latestPoMs = 0, latestExpMs = 0, latestSessionMs = 0;
           try {
             const uc = await env.DB.prepare(`SELECT COUNT(*) as c FROM users WHERE tenantId = ? AND (status IS NULL OR status = 'Active')`).bind(t.id).first();
             userCount = Number(uc?.c) || 0;
           } catch (_) {}
           try {
-            const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
-            // sales.date is ISO-ish text; count rows for tenant (best-effort)
-            const sc = await env.DB.prepare(`SELECT COUNT(*) as c FROM sales WHERE tenantId = ?`).bind(t.id).first();
-            sales30 = Number(sc?.c) || 0;
+            const sc = await env.DB.prepare(`SELECT COUNT(*) as c, COALESCE(SUM(totalAmount), 0) as vol, MAX(date) as lastDate FROM sales WHERE tenantId = ?`).bind(t.id).first();
+            salesCount = Number(sc?.c) || 0;
+            totalSalesVolume = Number(sc?.vol) || 0;
+            if (sc?.lastDate) { const ms = new Date(sc.lastDate).getTime(); if (!Number.isNaN(ms)) latestSaleMs = ms; }
           } catch (_) {}
-          let lastPay = null;
           try {
-            lastPay = await env.DB.prepare(`SELECT * FROM platform_payments WHERE tenantId = ? ORDER BY at DESC LIMIT 1`).bind(t.id).first();
+            const pc = await env.DB.prepare(`SELECT MAX(date) as lastDate FROM purchase_orders WHERE tenantId = ?`).bind(t.id).first();
+            if (pc?.lastDate) { const ms = new Date(pc.lastDate).getTime(); if (!Number.isNaN(ms)) latestPoMs = ms; }
           } catch (_) {}
+          try {
+            const ec = await env.DB.prepare(`SELECT MAX(date) as lastDate FROM expenses WHERE tenantId = ?`).bind(t.id).first();
+            if (ec?.lastDate) { const ms = new Date(ec.lastDate).getTime(); if (!Number.isNaN(ms)) latestExpMs = ms; }
+          } catch (_) {}
+          try {
+            const sess = await env.DB.prepare(`SELECT MAX(createdAt) as lastLogin FROM api_sessions WHERE tenantId = ?`).bind(t.id).first();
+            if (sess?.lastLogin) latestSessionMs = Number(sess.lastLogin) || 0;
+          } catch (_) {}
+          try {
+            const bc = await env.DB.prepare(`SELECT COUNT(*) as c FROM branches WHERE tenantId = ?`).bind(t.id).first();
+            if (bc && Number(bc.c) > 0) branchCount = Number(bc.c);
+          } catch (_) {}
+
+          const shopPays = allPayments.filter(p => p.tenantId === t.id);
+          const lastPay = shopPays[0] || null;
+          const totalSpend = shopPays.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+          const spendThisMonth = shopPays.filter(p => (Number(p.at) || 0) >= monthStartMs).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+          const paymentCount = shopPays.length;
+          const avgPayment = paymentCount > 0 ? Math.round((totalSpend / paymentCount) * 100) / 100 : 0;
+
+          const createdMs = Number(t.createdAt) || now;
+          const daysOnPlatform = Math.max(0, Math.floor((now - createdMs) / 86400000));
+          const lastPayMs = Number(lastPay?.at || t.lastPaymentAt) || 0;
           const trialEnds = t.trialEndsAt ? Number(t.trialEndsAt) : null;
-          const trialExpired = trialEnds != null && trialEnds < Date.now();
+          const trialExpired = trialEnds != null && trialEnds < now;
           const st = (t.status || '').toLowerCase();
-          const overdue = trialExpired && (st === 'trial' || st === 'active') && !t.lastPaymentAt;
+
+          // Next billing due: 30 days after last payment, or trialEndsAt if on trial / unpaid
+          const nextDueAt = lastPayMs > 0 ? (lastPayMs + 30 * 86400000) : (trialEnds != null ? trialEnds : null);
+          const daysUntilDue = nextDueAt != null ? Math.ceil((nextDueAt - now) / 86400000) : null;
+          const overdue = st !== 'deleted' && ((daysUntilDue != null && daysUntilDue < 0) || (trialExpired && (st === 'trial' || st === 'active') && !lastPayMs));
+          const dueSoon = st !== 'deleted' && st !== 'suspended' && !overdue && daysUntilDue != null && daysUntilDue >= 0 && daysUntilDue <= 7;
+
+          const lastActivityAt = Math.max(latestSaleMs, latestPoMs, latestExpMs, latestSessionMs, lastPayMs) || createdMs;
+          const daysInactive = Math.max(0, Math.floor((now - lastActivityAt) / 86400000));
+          const isInactive = st !== 'deleted' && daysInactive >= 14;
+          const isSubscribed = st !== 'deleted' && (paymentCount > 0 || st === 'active');
+          const planObj = planMap[t.plan || 'starter'] || null;
+
           enriched.push({
             ...t,
             userCount,
-            salesCount: sales30,
-            lastPayment: lastPay ? { amount: lastPay.amount, period: lastPay.period, at: lastPay.at, method: lastPay.method } : null,
+            branchCount,
+            salesCount,
+            totalSalesVolume,
+            totalSpend,
+            spendThisMonth,
+            paymentCount,
+            avgPayment,
+            monthlyRate: Number(planObj?.priceMonthly) || 0,
+            isSubscribed,
+            daysOnPlatform,
+            nextDueAt,
+            daysUntilDue,
+            dueSoon,
+            lastActivityAt,
+            daysInactive,
+            isInactive,
+            lastPayment: lastPay ? { amount: lastPay.amount, period: lastPay.period, at: lastPay.at, method: lastPay.method, reference: lastPay.reference } : null,
             trialExpired,
             overdue: !!overdue
           });
         }
-        const now = Date.now();
-        const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
-        let paymentsMonth = 0, paymentsMonthCount = 0;
-        try {
-          const pays = (await env.DB.prepare(`SELECT amount, at FROM platform_payments WHERE at >= ?`).bind(monthStart.getTime()).all()).results || [];
-          paymentsMonthCount = pays.length;
-          paymentsMonth = pays.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
-        } catch (_) {}
-        let paymentsAll = 0, paymentsAllCount = 0;
-        try {
-          const allPays = (await env.DB.prepare(`SELECT amount, at, tenantId FROM platform_payments`).all()).results || [];
-          paymentsAllCount = allPays.length;
-          paymentsAll = allPays.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
-        } catch (_) {}
-        const day = 24 * 60 * 60 * 1000;
-        const dueSoon = enriched.filter(t => {
-          const te = t.trialEndsAt ? Number(t.trialEndsAt) : null;
-          if (te == null) return false;
-          return te >= now && te <= now + 14 * day;
-        }).length;
-        const inactive = enriched.filter(t => {
-          const st = (t.status || '').toLowerCase();
-          if (st === 'suspended' || st === 'deleted' || st === 'archived') return true;
-          const lastPay = t.lastPaymentAt ? Number(t.lastPaymentAt) : (t.lastPayment?.at ? Number(t.lastPayment.at) : 0);
-          const created = Number(t.createdAt) || 0;
-          const lastActivity = Math.max(lastPay, created);
-          return lastActivity > 0 && (now - lastActivity) > 60 * day;
-        }).length;
-        const longTenure = enriched.filter(t => {
-          const created = Number(t.createdAt) || 0;
-          return created > 0 && (now - created) > 180 * day;
-        }).length;
-        const pending = list.filter(t => (t.status || '').toLowerCase() === 'pending').length;
-        const kpis = {
-          totalShops: list.length,
-          activeShops: list.filter(t => (t.status || '').toLowerCase() === 'active').length,
-          suspendedShops: list.filter(t => (t.status || '').toLowerCase() === 'suspended').length,
-          trialShops: list.filter(t => (t.status || '').toLowerCase() === 'trial').length,
-          pendingShops: pending,
-          paymentsThisMonth: paymentsMonth,
-          paymentsThisMonthCount: paymentsMonthCount,
-          paymentsAllTime: paymentsAll,
-          paymentsAllTimeCount: paymentsAllCount,
-          dueSoon,
-          inactiveShops: inactive,
-          longTenureShops: longTenure
-        };
-        // Attach derived flags for UI tables
-        const enriched2 = enriched.map(t => {
-          const te = t.trialEndsAt ? Number(t.trialEndsAt) : null;
-          const created = Number(t.createdAt) || 0;
-          const lastPay = t.lastPaymentAt ? Number(t.lastPaymentAt) : (t.lastPayment?.at ? Number(t.lastPayment.at) : 0);
-          const daysOnPlatform = created ? Math.floor((now - created) / day) : 0;
-          const daysToTrialEnd = te ? Math.ceil((te - now) / day) : null;
-          const inactiveDays = (() => {
-            const lastActivity = Math.max(lastPay || 0, created || 0);
-            return lastActivity ? Math.floor((now - lastActivity) / day) : null;
-          })();
-          return {
-            ...t,
-            daysOnPlatform,
-            daysToTrialEnd,
-            inactiveDays,
-            isDueSoon: te != null && te >= now && te <= now + 14 * day,
-            isLongTenure: daysOnPlatform >= 180,
-            isInactive: (inactiveDays != null && inactiveDays > 60) || ['suspended','deleted','archived'].includes((t.status||'').toLowerCase())
-          };
+
+        const paymentsMonthRows = allPayments.filter(p => (Number(p.at) || 0) >= monthStartMs);
+        const paymentsMonth = paymentsMonthRows.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+        const totalRevenueAllTime = allPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+
+        const revenueByPlanMap = {};
+        const tenantPlanLookup = Object.fromEntries(enriched.map(t => [t.id, t.plan || 'starter']));
+        allPayments.forEach(p => {
+          const pl = tenantPlanLookup[p.tenantId] || 'starter';
+          if (!revenueByPlanMap[pl]) revenueByPlanMap[pl] = { plan: pl, total: 0, count: 0 };
+          revenueByPlanMap[pl].total += parseFloat(p.amount) || 0;
+          revenueByPlanMap[pl].count += 1;
         });
-        return json({ tenants: enriched2, plans, planDefaults: PLAN_LIMITS, kpis });
+        const revenueByMethodMap = {};
+        allPayments.forEach(p => {
+          const m = p.method || 'Manual';
+          if (!revenueByMethodMap[m]) revenueByMethodMap[m] = { method: m, total: 0, count: 0 };
+          revenueByMethodMap[m].total += parseFloat(p.amount) || 0;
+          revenueByMethodMap[m].count += 1;
+        });
+
+        const liveTenants = enriched.filter(t => (t.status || '').toLowerCase() !== 'deleted');
+        const kpis = {
+          totalShops: liveTenants.length,
+          activeShops: liveTenants.filter(t => (t.status || '').toLowerCase() === 'active').length,
+          suspendedShops: liveTenants.filter(t => (t.status || '').toLowerCase() === 'suspended').length,
+          trialShops: liveTenants.filter(t => (t.status || '').toLowerCase() === 'trial').length,
+          subscribedShops: liveTenants.filter(t => t.isSubscribed).length,
+          dueSoonShops: liveTenants.filter(t => t.dueSoon).length,
+          overdueShops: liveTenants.filter(t => t.overdue).length,
+          inactiveShops: liveTenants.filter(t => t.isInactive).length,
+          longStandingShops: liveTenants.filter(t => (t.daysOnPlatform || 0) >= 30).length,
+          paymentsThisMonth: paymentsMonth,
+          paymentsThisMonthCount: paymentsMonthRows.length,
+          totalRevenueAllTime,
+          totalPaymentsCount: allPayments.length,
+          revenueByPlan: Object.values(revenueByPlanMap).sort((a, b) => b.total - a.total),
+          revenueByMethod: Object.values(revenueByMethodMap).sort((a, b) => b.total - a.total)
+        };
+        return json({ tenants: enriched, plans, planDefaults: PLAN_LIMITS, kpis, payments: allPayments.slice(0, 200) });
       }
       if (request.method === 'POST') {
         const body = await request.json();
@@ -1852,7 +2171,7 @@ globalThis.__neoSchemaReady = true;
         }
         return env.DB.prepare(`SELECT * FROM ${table} WHERE tenantId = ?${limSql}`).bind(tidForQuery).all().then(res => res.results || []).catch(() => []);
       };
-      let [inventory, sales, customers, expenses, categories, expenseCategories, itemStatuses, users, roles, suppliers, purchaseOrders, shopProfileRes, websiteSettingsRes, employees, leaveRequests, payrollRecords, hrSettingsRes, taxSettingsRes] = await Promise.all([
+      let [inventory, sales, customers, expenses, categories, expenseCategories, itemStatuses, users, roles, suppliers, purchaseOrders, shopProfileRes, employees, leaveRequests, payrollRecords, hrSettingsRes, taxSettingsRes] = await Promise.all([
         qTenant('inventory'),
         qTenant('sales', { limit: 2000 }),
         qTenant('customers'),
@@ -1863,20 +2182,16 @@ globalThis.__neoSchemaReady = true;
         qTenant('users'),
         qTenant('roles'),
         qTenant('suppliers'),
-        qTenant('purchase_orders').then(rows => (rows || []).map(po => ({ ...po, returnHistory: (() => { try { return JSON.parse(po.returnHistory || '[]'); } catch (_) { return []; } })() }))),
+        qTenant('purchase_orders').then(rows => (rows || []).map(po => ({
+          ...po,
+          returnHistory: (() => { try { return typeof po.returnHistory === 'string' ? JSON.parse(po.returnHistory || '[]') : (po.returnHistory || []); } catch (_) { return []; } })(),
+          paymentHistory: (() => { try { return typeof po.paymentHistory === 'string' ? JSON.parse(po.paymentHistory || '[]') : (po.paymentHistory || []); } catch (_) { return []; } })()
+        }))),
         (async () => {
           try {
             const tid = (auth && auth.tenantId) || 'tenant-default';
             let row = await env.DB.prepare('SELECT * FROM shop_profile WHERE tenantId = ? LIMIT 1').bind(tid).first();
             if (!row && tid === 'tenant-default') row = await env.DB.prepare('SELECT * FROM shop_profile WHERE id = 1').first();
-            return row;
-          } catch (_) { return null; }
-        })(),
-        (async () => {
-          try {
-            const tid = (auth && auth.tenantId) || 'tenant-default';
-            let row = await env.DB.prepare('SELECT * FROM website_settings WHERE tenantId = ? LIMIT 1').bind(tid).first();
-            if (!row && tid === 'tenant-default') row = await env.DB.prepare('SELECT * FROM website_settings WHERE id = 1').first();
             return row;
           } catch (_) { return null; }
         })(),
@@ -1931,7 +2246,6 @@ globalThis.__neoSchemaReady = true;
           }
         } catch (_) {}
       }
-      const websiteSettings = websiteSettingsRes || null;
       const hrSettings = hrSettingsRes || null;
       const taxSettings = taxSettingsRes || null;
       const tidBranches = (auth && auth.tenantId) || 'tenant-default';
@@ -1943,17 +2257,28 @@ globalThis.__neoSchemaReady = true;
         }
       } catch (_) {}
 
+      const parseJsonArr = (v) => {
+        if (Array.isArray(v)) return v;
+        if (typeof v === 'string') { try { const a = JSON.parse(v || '[]'); return Array.isArray(a) ? a : []; } catch (_) { return []; } }
+        return [];
+      };
+      const parseJsonObj = (v) => {
+        if (v && typeof v === 'object' && !Array.isArray(v)) return v;
+        if (typeof v === 'string') { try { const o = JSON.parse(v || '{}'); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; } catch (_) { return {}; } }
+        return {};
+      };
+
       // Tenant isolation (skip for super-admin platform view)
       if (!auth.isSuperAdmin) {
         const tid = auth.tenantId || 'tenant-default';
-        inventory = scopeTenant(inventory, tid, false);
-        sales = scopeTenant(sales, tid, false);
-        customers = scopeTenant(customers, tid, false);
-        expenses = scopeTenant(expenses, tid, false);
+        inventory = scopeTenant(inventory, tid, false).map(it => ({ ...it, varianceValues: parseJsonObj(it.varianceValues) }));
+        sales = scopeTenant(sales, tid, false).map(s => ({ ...s, returnHistory: parseJsonArr(s.returnHistory), paymentHistory: parseJsonArr(s.paymentHistory) }));
+        customers = scopeTenant(customers, tid, false).map(c => ({ ...c, loyaltyPoints: parseFloat(c.loyaltyPoints) || 0 }));
+        expenses = scopeTenant(expenses, tid, false).map(e => ({ ...e, paymentHistory: parseJsonArr(e.paymentHistory) }));
         users = scopeTenant(users, tid, false);
         roles = scopeTenant(roles, tid, false);
         suppliers = scopeTenant(suppliers, tid, false);
-        purchaseOrders = scopeTenant(purchaseOrders, tid, false).map(po => ({ ...po, returnHistory: (() => { try { return typeof po.returnHistory === 'string' ? JSON.parse(po.returnHistory || '[]') : (po.returnHistory || []); } catch (_) { return []; } })(), paymentHistory: (() => { try { return typeof po.paymentHistory === 'string' ? JSON.parse(po.paymentHistory || '[]') : (po.paymentHistory || []); } catch (_) { return []; } })() }));
+        purchaseOrders = scopeTenant(purchaseOrders, tid, false).map(po => ({ ...po, returnHistory: parseJsonArr(po.returnHistory), paymentHistory: parseJsonArr(po.paymentHistory) }));
         employees = scopeTenant(employees, tid, false);
         leaveRequests = scopeTenant(leaveRequests, tid, false);
         payrollRecords = scopeTenant(payrollRecords, tid, false);
@@ -1990,13 +2315,14 @@ globalThis.__neoSchemaReady = true;
       } catch (_) { stockMovements = []; }
       let tenantSettings = null;
       try {
+        await ensureTenantSettingsSchema();
         tenantSettings = await env.DB.prepare(`SELECT * FROM tenant_settings WHERE tenantId = ? LIMIT 1`).bind(auth.tenantId || 'tenant-default').first();
       } catch (_) {}
 
       return json({
-        inventory: can(auth, 'inventory', 'view') ? inventory : [],
+        inventory: can(auth, 'inventory', 'view') || can(auth, 'pos', 'view') ? inventory : [],
         sales: filterOwnList('sales', sales),
-        customers: filterOwnList('customers', customers, ['createdBy', 'name']),
+        customers: (can(auth, 'customers', 'view') || can(auth, 'pos', 'view')) ? (isOwnOnly(auth, 'customers') ? filterOwnList('customers', customers, ['createdBy', 'name']) : customers) : [],
         expenses: filterOwnList('expenses', expenses, ['createdBy', 'payer']),
         categories: can(auth, 'settings', 'view') || can(auth, 'inventory', 'view') ? categories : categories,
         expenseCategories: expenseCategories,
@@ -2011,7 +2337,6 @@ globalThis.__neoSchemaReady = true;
         suppliers: filterOwnList('suppliers', suppliers, ['createdBy', 'name']),
         purchaseOrders: filterOwnList('purchase', purchaseOrders),
         shopProfile,
-        websiteSettings,
         employees: filterOwnList('employees', employees, ['createdBy', 'name']),
         leaveRequests: filterOwnList('hr', leaveRequests, ['createdBy', 'employeeName', 'approvedBy']),
         payrollRecords: filterOwnList('payroll', payrollRecords, ['createdBy', 'employeeName']),
@@ -2315,9 +2640,13 @@ globalThis.__neoSchemaReady = true;
         return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
       }
       if (request.method === 'DELETE' && id) {
+        const delItem = await env.DB.prepare(`SELECT name FROM inventory WHERE id = ? AND tenantId = ?`).bind(id, tidInv).first().catch(() => null);
         await env.DB.prepare(`DELETE FROM inventory WHERE id = ? AND tenantId = ?`).bind(id, tidInv).run();
         try { await env.DB.prepare(`DELETE FROM stock_movements WHERE tenantId = ? AND itemId = ?`).bind(tidInv, id).run(); } catch (_) {}
-        try { await writeSecurityAudit(auth, 'delete', routeType, id); } catch (_) {}
+        try {
+          await writeSecurityAudit(auth, 'delete', routeType, id);
+          await appendTenantAuditRecord(tidInv, auth.user?.name || 'Staff', 'delete', 'inventory', `${delItem?.name || id} (${id})`);
+        } catch (_) {}
         return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
       }
     }
@@ -2329,19 +2658,27 @@ globalThis.__neoSchemaReady = true;
         const eligibilityJson = JSON.stringify(body.eligibility || ['Paid']);
         const tid = auth.tenantId || 'tenant-default';
         try { await env.DB.prepare(`ALTER TABLE customers ADD COLUMN loyaltyPoints REAL DEFAULT 0`).run(); } catch (_) {}
+        try { await env.DB.prepare(`ALTER TABLE customers ADD COLUMN creditLimit REAL DEFAULT 0`).run(); } catch (_) {}
         try { await env.DB.prepare(`ALTER TABLE customers ADD COLUMN salesTermId TEXT`).run(); } catch (_) {}
         try { await env.DB.prepare(`ALTER TABLE customers ADD COLUMN paymentTerm TEXT`).run(); } catch (_) {}
         try { await env.DB.prepare(`ALTER TABLE customers ADD COLUMN tags TEXT`).run(); } catch (_) {}
         try { await env.DB.prepare(`ALTER TABLE customers ADD COLUMN priceList TEXT`).run(); } catch (_) {}
         try { await env.DB.prepare(`ALTER TABLE customers ADD COLUMN kraPin TEXT`).run(); } catch (_) {}
+        const creditLimitNum = parseFloat(body.creditLimit) || 0;
         try {
           await env.DB.prepare(
-            `INSERT INTO customers (id, name, phone, location, eligibility, loyaltyPoints, salesTermId, paymentTerm, tags, priceList, kraPin, tenantId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).bind(body.id, body.name, body.phone || '', body.location || '', eligibilityJson, parseFloat(body.loyaltyPoints) || 0, body.salesTermId || '', body.paymentTerm || '', body.tags || '', body.priceList || 'retail', body.kraPin || '', tid).run();
+            `INSERT INTO customers (id, name, phone, location, eligibility, loyaltyPoints, creditLimit, salesTermId, paymentTerm, tags, priceList, kraPin, tenantId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).bind(body.id, body.name, body.phone || '', body.location || '', eligibilityJson, parseFloat(body.loyaltyPoints) || 0, creditLimitNum, body.salesTermId || '', body.paymentTerm || '', body.tags || '', body.priceList || 'retail', body.kraPin || '', tid).run();
         } catch (_) {
-          await env.DB.prepare(
-            `INSERT INTO customers (id, name, phone, location, eligibility, tenantId) VALUES (?, ?, ?, ?, ?, ?)`
-          ).bind(body.id, body.name, body.phone, body.location, eligibilityJson, tid).run();
+          try {
+            await env.DB.prepare(
+              `INSERT INTO customers (id, name, phone, location, eligibility, loyaltyPoints, salesTermId, paymentTerm, tags, priceList, kraPin, tenantId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            ).bind(body.id, body.name, body.phone || '', body.location || '', eligibilityJson, parseFloat(body.loyaltyPoints) || 0, body.salesTermId || '', body.paymentTerm || '', body.tags || '', body.priceList || 'retail', body.kraPin || '', tid).run();
+          } catch (__) {
+            await env.DB.prepare(
+              `INSERT INTO customers (id, name, phone, location, eligibility, tenantId) VALUES (?, ?, ?, ?, ?, ?)`
+            ).bind(body.id, body.name, body.phone, body.location, eligibilityJson, tid).run();
+          }
         }
         return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
       }
@@ -2350,19 +2687,27 @@ globalThis.__neoSchemaReady = true;
         const eligibilityJson = JSON.stringify(body.eligibility || ['Paid']);
         const tid = auth.tenantId || 'tenant-default';
         try { await env.DB.prepare(`ALTER TABLE customers ADD COLUMN loyaltyPoints REAL DEFAULT 0`).run(); } catch (_) {}
+        try { await env.DB.prepare(`ALTER TABLE customers ADD COLUMN creditLimit REAL DEFAULT 0`).run(); } catch (_) {}
+        const creditLimitNum = parseFloat(body.creditLimit) || 0;
         try {
           await env.DB.prepare(
-            `UPDATE customers SET name = ?, phone = ?, location = ?, eligibility = ?, loyaltyPoints = ?, salesTermId = ?, paymentTerm = ?, tags = ?, priceList = ?, kraPin = ? WHERE id = ? AND tenantId = ?`
-          ).bind(body.name, body.phone || '', body.location || '', eligibilityJson, parseFloat(body.loyaltyPoints) || 0, body.salesTermId || '', body.paymentTerm || '', body.tags || '', body.priceList || 'retail', body.kraPin || '', id, tid).run();
+            `UPDATE customers SET name = ?, phone = ?, location = ?, eligibility = ?, loyaltyPoints = ?, creditLimit = ?, salesTermId = ?, paymentTerm = ?, tags = ?, priceList = ?, kraPin = ? WHERE id = ? AND tenantId = ?`
+          ).bind(body.name, body.phone || '', body.location || '', eligibilityJson, parseFloat(body.loyaltyPoints) || 0, creditLimitNum, body.salesTermId || '', body.paymentTerm || '', body.tags || '', body.priceList || 'retail', body.kraPin || '', id, tid).run();
         } catch (_) {
           try {
             await env.DB.prepare(
-              `UPDATE customers SET name = ?, phone = ?, location = ?, eligibility = ?, loyaltyPoints = ? WHERE id = ? AND tenantId = ?`
-            ).bind(body.name, body.phone || '', body.location || '', eligibilityJson, parseFloat(body.loyaltyPoints) || 0, id, tid).run();
+              `UPDATE customers SET name = ?, phone = ?, location = ?, eligibility = ?, loyaltyPoints = ?, salesTermId = ?, paymentTerm = ?, tags = ?, priceList = ?, kraPin = ? WHERE id = ? AND tenantId = ?`
+            ).bind(body.name, body.phone || '', body.location || '', eligibilityJson, parseFloat(body.loyaltyPoints) || 0, body.salesTermId || '', body.paymentTerm || '', body.tags || '', body.priceList || 'retail', body.kraPin || '', id, tid).run();
           } catch (__) {
-            await env.DB.prepare(
-              `UPDATE customers SET name = ?, phone = ?, location = ?, eligibility = ? WHERE id = ? AND tenantId = ?`
-            ).bind(body.name, body.phone, body.location, eligibilityJson, id, tid).run();
+            try {
+              await env.DB.prepare(
+                `UPDATE customers SET name = ?, phone = ?, location = ?, eligibility = ?, loyaltyPoints = ? WHERE id = ? AND tenantId = ?`
+              ).bind(body.name, body.phone || '', body.location || '', eligibilityJson, parseFloat(body.loyaltyPoints) || 0, id, tid).run();
+            } catch (___) {
+              await env.DB.prepare(
+                `UPDATE customers SET name = ?, phone = ?, location = ?, eligibility = ? WHERE id = ? AND tenantId = ?`
+              ).bind(body.name, body.phone, body.location, eligibilityJson, id, tid).run();
+            }
           }
         }
         return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
@@ -2388,6 +2733,7 @@ globalThis.__neoSchemaReady = true;
       try { await env.DB.prepare(`ALTER TABLE expenses ADD COLUMN balanceDue REAL`).run(); } catch (_) {}
       try { await env.DB.prepare(`ALTER TABLE expenses ADD COLUMN paymentStatus TEXT`).run(); } catch (_) {}
       try { await env.DB.prepare(`ALTER TABLE expenses ADD COLUMN taxAmount REAL`).run(); } catch (_) {}
+      try { await env.DB.prepare(`ALTER TABLE expenses ADD COLUMN paymentHistory TEXT`).run(); } catch (_) {}
       if (request.method === 'POST') {
         const body = await request.json();
         const amount = parseFloat(body.amount) || 0;
@@ -2397,16 +2743,31 @@ globalThis.__neoSchemaReady = true;
         const tid = auth.tenantId || 'tenant-default';
         const branchId = await resolveBranchId(tid, body.branchId || requestBranchId());
         if (!branchAllowedForAuth(auth, branchId)) return json({ error: 'Not allowed to post expenses for this location.' }, 403);
+        let payHistArr = body.paymentHistory;
+        try { if (typeof payHistArr === 'string') payHistArr = JSON.parse(payHistArr || '[]'); } catch (_) { payHistArr = []; }
+        if (!Array.isArray(payHistArr) || !payHistArr.length) {
+          payHistArr = paidAmount > 0 ? [{ id: `exppay-${Date.now()}`, date: new Date().toISOString(), amount: paidAmount, paymentMethod: body.paymentMethod || 'Cash', mpesaCode: body.mpesaCode || '' }] : [];
+        }
+        const payHistJson = JSON.stringify(payHistArr);
         try {
           await env.DB.prepare(
-            `INSERT INTO expenses (id, date, category, description, amount, paymentMethod, mpesaCode, payer, paidTo, paidAmount, balanceDue, paymentStatus, taxAmount, tenantId, branchId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).bind(body.id, body.date, body.category, body.description, amount, body.paymentMethod, body.mpesaCode || '', body.payer || '', body.paidTo || '', paidAmount, balanceDue, paymentStatus, body.taxAmount || 0, tid, branchId).run();
-        } catch (err) {
-          await env.DB.prepare(
-            `INSERT INTO expenses (id, date, category, description, amount, paymentMethod, mpesaCode, payer, paidTo, tenantId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).bind(body.id, body.date, body.category, body.description, amount, body.paymentMethod, body.mpesaCode || '', body.payer || '', body.paidTo || '', tid).run();
+            `INSERT INTO expenses (id, date, category, description, amount, paymentMethod, mpesaCode, payer, paidTo, paidAmount, balanceDue, paymentStatus, taxAmount, tenantId, branchId, paymentHistory) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).bind(body.id, body.date, body.category, body.description, amount, body.paymentMethod, body.mpesaCode || '', body.payer || '', body.paidTo || '', paidAmount, balanceDue, paymentStatus, body.taxAmount || 0, tid, branchId, payHistJson).run();
+        } catch (err0) {
+          try {
+            await env.DB.prepare(
+              `INSERT INTO expenses (id, date, category, description, amount, paymentMethod, mpesaCode, payer, paidTo, paidAmount, balanceDue, paymentStatus, taxAmount, tenantId, branchId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            ).bind(body.id, body.date, body.category, body.description, amount, body.paymentMethod, body.mpesaCode || '', body.payer || '', body.paidTo || '', paidAmount, balanceDue, paymentStatus, body.taxAmount || 0, tid, branchId).run();
+          } catch (err) {
+            await env.DB.prepare(
+              `INSERT INTO expenses (id, date, category, description, amount, paymentMethod, mpesaCode, payer, paidTo, tenantId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            ).bind(body.id, body.date, body.category, body.description, amount, body.paymentMethod, body.mpesaCode || '', body.payer || '', body.paidTo || '', tid).run();
+          }
         }
         try { await journalExpense(auth, { ...body, amount, paidAmount, balanceDue, paymentStatus }, branchId); } catch (_) {}
+        if (paidAmount > 0) {
+          try { await appendTenantAuditRecord(tid, auth.user?.name || body.payer || 'Staff', 'payment', 'expense', `${body.description || body.category} — Paid ${paidAmount} via ${body.paymentMethod || 'Cash'}`); } catch (_) {}
+        }
         return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
       }
       if (request.method === 'PUT' && id) {
@@ -2416,21 +2777,38 @@ globalThis.__neoSchemaReady = true;
         const balanceDue = body.balanceDue != null ? parseFloat(body.balanceDue) : Math.max(0, amount - paidAmount);
         const paymentStatus = body.paymentStatus || (balanceDue <= 0 ? 'Paid' : (paidAmount > 0 ? 'Partially Paid' : 'Unpaid'));
         const tid = auth.tenantId || 'tenant-default';
+        const prevExp = await env.DB.prepare(`SELECT paidAmount, description, category FROM expenses WHERE id = ? AND tenantId = ?`).bind(id, tid).first().catch(() => null);
+        const prevPaid = prevExp ? (parseFloat(prevExp.paidAmount) || 0) : 0;
+        const payHistJson = body.paymentHistory != null ? (typeof body.paymentHistory === 'string' ? body.paymentHistory : JSON.stringify(body.paymentHistory)) : null;
         try {
-          await env.DB.prepare(
-            `UPDATE expenses SET date = ?, category = ?, description = ?, amount = ?, paymentMethod = ?, mpesaCode = ?, payer = ?, paidTo = ?, paidAmount = ?, balanceDue = ?, paymentStatus = ?, taxAmount = ? WHERE id = ? AND tenantId = ?`
-          ).bind(body.date, body.category, body.description, amount, body.paymentMethod, body.mpesaCode || '', body.payer || '', body.paidTo || '', paidAmount, balanceDue, paymentStatus, body.taxAmount || 0, id, tid).run();
+          if (payHistJson != null) {
+            await env.DB.prepare(
+              `UPDATE expenses SET date = ?, category = ?, description = ?, amount = ?, paymentMethod = ?, mpesaCode = ?, payer = ?, paidTo = ?, paidAmount = ?, balanceDue = ?, paymentStatus = ?, taxAmount = ?, paymentHistory = ? WHERE id = ? AND tenantId = ?`
+            ).bind(body.date, body.category, body.description, amount, body.paymentMethod, body.mpesaCode || '', body.payer || '', body.paidTo || '', paidAmount, balanceDue, paymentStatus, body.taxAmount || 0, payHistJson, id, tid).run();
+          } else {
+            await env.DB.prepare(
+              `UPDATE expenses SET date = ?, category = ?, description = ?, amount = ?, paymentMethod = ?, mpesaCode = ?, payer = ?, paidTo = ?, paidAmount = ?, balanceDue = ?, paymentStatus = ?, taxAmount = ? WHERE id = ? AND tenantId = ?`
+            ).bind(body.date, body.category, body.description, amount, body.paymentMethod, body.mpesaCode || '', body.payer || '', body.paidTo || '', paidAmount, balanceDue, paymentStatus, body.taxAmount || 0, id, tid).run();
+          }
         } catch (err) {
           await env.DB.prepare(
             `UPDATE expenses SET date = ?, category = ?, description = ?, amount = ?, paymentMethod = ?, mpesaCode = ?, payer = ?, paidTo = ? WHERE id = ? AND tenantId = ?`
           ).bind(body.date, body.category, body.description, amount, body.paymentMethod, body.mpesaCode || '', body.payer || '', body.paidTo || '', id, tid).run();
         }
+        const deltaPaid = Math.round((paidAmount - prevPaid) * 100) / 100;
+        if (deltaPaid > 0) {
+          try { await appendTenantAuditRecord(tid, auth.user?.name || body.payer || 'Staff', 'payment', 'expense', `${body.description || body.category || id} — Paid +${deltaPaid} via ${body.paymentMethod || 'Cash'}`); } catch (_) {}
+        }
         return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
       }
       if (request.method === 'DELETE' && id) {
         const tid = auth.tenantId || 'tenant-default';
+        const delExp = await env.DB.prepare(`SELECT description, category, amount FROM expenses WHERE id = ? AND tenantId = ?`).bind(id, tid).first().catch(() => null);
         await env.DB.prepare(`DELETE FROM expenses WHERE id = ? AND tenantId = ?`).bind(id, tid).run();
-        try { await writeSecurityAudit(auth, 'delete', routeType, id); } catch (_) {}
+        try {
+          await writeSecurityAudit(auth, 'delete', routeType, id);
+          await appendTenantAuditRecord(tid, auth.user?.name || 'Staff', 'delete', 'expense', `${delExp?.description || delExp?.category || id} (${id})`);
+        } catch (_) {}
         return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
       }
     }
@@ -2438,6 +2816,7 @@ globalThis.__neoSchemaReady = true;
     // 6. SALES CRUD
     if (routeType === 'sales') {
       try { await env.DB.prepare('ALTER TABLE sales ADD COLUMN returnHistory TEXT').run(); } catch (_) {}
+      try { await env.DB.prepare('ALTER TABLE sales ADD COLUMN paymentHistory TEXT').run(); } catch (_) {}
       try { await env.DB.prepare('ALTER TABLE sales ADD COLUMN taxInclusive INTEGER DEFAULT 0').run(); } catch (_) {}
       try { await env.DB.prepare('ALTER TABLE sales ADD COLUMN originalSaleType TEXT').run(); } catch (_) {}
       try { await env.DB.prepare('ALTER TABLE sales ADD COLUMN branchId TEXT').run(); } catch (_) {}
@@ -2562,9 +2941,20 @@ globalThis.__neoSchemaReady = true;
           tenantId,
           branchId: branchId || ''
         };
+        let initPayHist = body.paymentHistory;
+        try { if (typeof initPayHist === 'string') initPayHist = JSON.parse(initPayHist || '[]'); } catch (_) { initPayHist = []; }
+        if (!Array.isArray(initPayHist) || !initPayHist.length) {
+          initPayHist = vals.paidAmount > 0 ? [{ id: `spay-${Date.now()}`, date: new Date().toISOString(), amount: vals.paidAmount, paymentMethod: vals.paymentMethod, mpesaCode: vals.mpesaCode && vals.mpesaCode !== 'N/A' ? vals.mpesaCode : '' }] : [];
+        }
+        const salePayHistJson = JSON.stringify(initPayHist);
+
         let saleInserted = false;
         let lastErr = null;
         const attempts = [
+          async () => env.DB.prepare(
+            `INSERT INTO sales (id, date, customerName, saleType, items, totalAmount, paymentMethod, mpesaCode, cashier, paidAmount, balanceDue, deadline, subtotal, taxAmount, taxRate, taxName, tenantId, taxInclusive, branchId, paymentHistory)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).bind(vals.id, vals.date, vals.customerName, vals.saleType, vals.itemsJson, vals.totalAmount, vals.paymentMethod, vals.mpesaCode, vals.cashier, vals.paidAmount, vals.balanceDue, vals.deadline, vals.subtotal, vals.taxAmount, vals.taxRate, vals.taxName, vals.tenantId, vals.taxInclusive, vals.branchId, salePayHistJson).run(),
           async () => env.DB.prepare(
             `INSERT INTO sales (id, date, customerName, saleType, items, totalAmount, paymentMethod, mpesaCode, cashier, paidAmount, balanceDue, deadline, subtotal, taxAmount, taxRate, taxName, tenantId, taxInclusive, branchId)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -2601,6 +2991,34 @@ globalThis.__neoSchemaReady = true;
           await env.DB.prepare(`UPDATE sales SET tenantId = ? WHERE id = ? AND (tenantId IS NULL OR tenantId = '')`).bind(tenantId, body.id).run();
         } catch (_) {}
 
+        // Server-side loyalty points award & redemption (works regardless of customers.update role permission)
+        let updatedCustomerLoyaltyPoints = null;
+        try {
+          const ptsEarned = Math.max(0, parseFloat(body.loyaltyPointsEarned) || 0);
+          const ptsRedeemed = Math.max(0, parseFloat(body.loyaltyPointsRedeemed) || 0);
+          if ((ptsEarned > 0 || ptsRedeemed > 0) && (body.customerId || vals.customerName)) {
+            try { await env.DB.prepare(`ALTER TABLE customers ADD COLUMN loyaltyPoints REAL DEFAULT 0`).run(); } catch (_) {}
+            let custRow = null;
+            if (body.customerId) {
+              custRow = await env.DB.prepare(`SELECT id, loyaltyPoints FROM customers WHERE id = ? AND (tenantId = ? OR tenantId IS NULL OR tenantId = '') LIMIT 1`).bind(body.customerId, tenantId).first();
+            }
+            if (!custRow && vals.customerName) {
+              custRow = await env.DB.prepare(`SELECT id, loyaltyPoints FROM customers WHERE LOWER(name) = LOWER(?) AND (tenantId = ? OR tenantId IS NULL OR tenantId = '') LIMIT 1`).bind(vals.customerName, tenantId).first();
+            }
+            if (custRow && custRow.id) {
+              const nextPts = Math.max(0, (parseFloat(custRow.loyaltyPoints) || 0) + ptsEarned - ptsRedeemed);
+              await env.DB.prepare(`UPDATE customers SET loyaltyPoints = ? WHERE id = ?`).bind(nextPts, custRow.id).run();
+              updatedCustomerLoyaltyPoints = { customerId: custRow.id, loyaltyPoints: nextPts };
+            }
+          }
+        } catch (_) {}
+
+        if (vals.paidAmount > 0) {
+          try {
+            await appendTenantAuditRecord(tenantId, auth.user?.name || vals.cashier || 'Staff', 'payment', 'sales', `Sale ${vals.id} (${vals.customerName}) — Paid ${vals.paidAmount} via ${vals.paymentMethod}`);
+          } catch (_) {}
+        }
+
         // Journal (never fails the sale)
         let journalId = null;
         try {
@@ -2609,33 +3027,44 @@ globalThis.__neoSchemaReady = true;
           console.log('journalSale failed', je && je.message);
         }
 
-        return json({ success: true, id: body.id, journalId: journalId || null, stockAdjusted: trackedLines.length });
+        return json({ success: true, id: body.id, journalId: journalId || null, stockAdjusted: trackedLines.length, customerLoyalty: updatedCustomerLoyaltyPoints });
       }
       if (request.method === 'PUT' && id) {
         const body = await request.json();
         const itemsJson = typeof body.items === 'string' ? body.items : JSON.stringify(body.items || []);
         const tid = auth.tenantId || 'tenant-default';
         let prevPaid = 0;
+        let prevHistRaw = '[]';
         try {
-          const prev = await env.DB.prepare('SELECT paidAmount, customerName, branchId FROM sales WHERE id = ? AND tenantId = ?').bind(id, tid).first();
+          const prev = await env.DB.prepare('SELECT paidAmount, customerName, branchId, paymentHistory FROM sales WHERE id = ? AND tenantId = ?').bind(id, tid).first();
           prevPaid = Number(prev?.paidAmount) || 0;
+          prevHistRaw = prev?.paymentHistory || '[]';
         } catch (_) {
           try {
             const prev = await env.DB.prepare('SELECT paidAmount FROM sales WHERE id = ?').bind(id).first();
             prevPaid = Number(prev?.paidAmount) || 0;
           } catch (__) {}
         }
+        const payHistJson = body.paymentHistory != null
+          ? (typeof body.paymentHistory === 'string' ? body.paymentHistory : JSON.stringify(body.paymentHistory))
+          : prevHistRaw;
         try {
           await env.DB.prepare(
-            `UPDATE sales SET date = ?, customerName = ?, saleType = ?, items = ?, totalAmount = ?, paymentMethod = ?, mpesaCode = ?, cashier = ?, paidAmount = ?, balanceDue = ?, deadline = ?, subtotal = ?, taxAmount = ?, taxRate = ?, taxName = ?, returnHistory = ?, taxInclusive = ?, originalSaleType = ? WHERE id = ? AND tenantId = ?`
-          ).bind(body.date, body.customerName, body.saleType, itemsJson, body.totalAmount, body.paymentMethod, body.mpesaCode || '', body.cashier, body.paidAmount, body.balanceDue, body.deadline || '', body.subtotal ?? body.totalAmount, body.taxAmount || 0, body.taxRate || 0, body.taxName || '', JSON.stringify(body.returnHistory || []), body.taxInclusive ? 1 : 0, body.originalSaleType || '', id, tid).run();
+            `UPDATE sales SET date = ?, customerName = ?, saleType = ?, items = ?, totalAmount = ?, paymentMethod = ?, mpesaCode = ?, cashier = ?, paidAmount = ?, balanceDue = ?, deadline = ?, subtotal = ?, taxAmount = ?, taxRate = ?, taxName = ?, returnHistory = ?, taxInclusive = ?, originalSaleType = ?, paymentHistory = ? WHERE id = ? AND tenantId = ?`
+          ).bind(body.date, body.customerName, body.saleType, itemsJson, body.totalAmount, body.paymentMethod, body.mpesaCode || '', body.cashier, body.paidAmount, body.balanceDue, body.deadline || '', body.subtotal ?? body.totalAmount, body.taxAmount || 0, body.taxRate || 0, body.taxName || '', JSON.stringify(body.returnHistory || []), body.taxInclusive ? 1 : 0, body.originalSaleType || '', payHistJson, id, tid).run();
         } catch (_) {
           try {
             await env.DB.prepare(
-              `UPDATE sales SET date = ?, customerName = ?, saleType = ?, items = ?, totalAmount = ?, paymentMethod = ?, mpesaCode = ?, cashier = ?, paidAmount = ?, balanceDue = ?, deadline = ? WHERE id = ?`
-            ).bind(body.date, body.customerName, body.saleType, itemsJson, body.totalAmount, body.paymentMethod, body.mpesaCode || '', body.cashier, body.paidAmount, body.balanceDue, body.deadline || '', id).run();
-          } catch (e2) {
-            return json({ error: 'Sale update failed: ' + (e2.message || 'db') }, 500);
+              `UPDATE sales SET date = ?, customerName = ?, saleType = ?, items = ?, totalAmount = ?, paymentMethod = ?, mpesaCode = ?, cashier = ?, paidAmount = ?, balanceDue = ?, deadline = ?, subtotal = ?, taxAmount = ?, taxRate = ?, taxName = ?, returnHistory = ?, taxInclusive = ?, originalSaleType = ? WHERE id = ? AND tenantId = ?`
+            ).bind(body.date, body.customerName, body.saleType, itemsJson, body.totalAmount, body.paymentMethod, body.mpesaCode || '', body.cashier, body.paidAmount, body.balanceDue, body.deadline || '', body.subtotal ?? body.totalAmount, body.taxAmount || 0, body.taxRate || 0, body.taxName || '', JSON.stringify(body.returnHistory || []), body.taxInclusive ? 1 : 0, body.originalSaleType || '', id, tid).run();
+          } catch (__) {
+            try {
+              await env.DB.prepare(
+                `UPDATE sales SET date = ?, customerName = ?, saleType = ?, items = ?, totalAmount = ?, paymentMethod = ?, mpesaCode = ?, cashier = ?, paidAmount = ?, balanceDue = ?, deadline = ? WHERE id = ?`
+              ).bind(body.date, body.customerName, body.saleType, itemsJson, body.totalAmount, body.paymentMethod, body.mpesaCode || '', body.cashier, body.paidAmount, body.balanceDue, body.deadline || '', id).run();
+            } catch (e2) {
+              return json({ error: 'Sale update failed: ' + (e2.message || 'db') }, 500);
+            }
           }
         }
         try {
@@ -2643,18 +3072,23 @@ globalThis.__neoSchemaReady = true;
           const delta = Math.round((newPaid - prevPaid) * 100) / 100;
           if (delta > 0.009) {
             await journalCustomerReceipt(auth, { id, customerName: body.customerName }, delta, body.paymentMethod || 'Cash', body.branchId || '', id + '-rcpt-' + newPaid);
+            await appendTenantAuditRecord(tid, auth.user?.name || body.cashier || 'Staff', 'payment', 'sales', `Sale ${id} (${body.customerName || ''}) — Additional payment ${delta} via ${body.paymentMethod || 'Cash'}`);
           }
         } catch (_) {}
         return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
       }
       if (request.method === 'DELETE' && id) {
         const tid = auth.tenantId || 'tenant-default';
+        const delSale = await env.DB.prepare(`SELECT customerName, totalAmount FROM sales WHERE id = ? AND tenantId = ?`).bind(id, tid).first().catch(() => null);
         try {
           await env.DB.prepare(`DELETE FROM sales WHERE id = ? AND tenantId = ?`).bind(id, tid).run();
         } catch (_) {
           await env.DB.prepare(`DELETE FROM sales WHERE id = ?`).bind(id).run();
         }
-        try { await writeSecurityAudit(auth, 'delete', routeType, id); } catch (_) {}
+        try {
+          await writeSecurityAudit(auth, 'delete', routeType, id);
+          await appendTenantAuditRecord(tid, auth.user?.name || 'Staff', 'delete', 'sales', `Deleted sale ${id}${delSale?.customerName ? ' (' + delSale.customerName + ')' : ''}`);
+        } catch (_) {}
         return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
       }
     }
@@ -2739,7 +3173,10 @@ globalThis.__neoSchemaReady = true;
       }
 
       await env.DB.batch(statements);
-      try { await writeSecurityAudit(auth, 'sales-return', 'sales', saleId + ' refund ' + refundTotal); } catch (_) {}
+      try {
+        await writeSecurityAudit(auth, 'sales-return', 'sales', saleId + ' refund ' + refundTotal);
+        await appendTenantAuditRecord(tenantId, auth.user?.name || 'Manager', 'sales-return', 'sales', `Sale ${saleId} (${sale.customerName || ''}) — Refund ${refundTotal} via ${method} (${disposition})`);
+      } catch (_) {}
       try {
         let cogsRestore = 0;
         for (const it of updatedItems) {
@@ -2955,8 +3392,12 @@ globalThis.__neoSchemaReady = true;
       }
       if (request.method === 'DELETE' && id) {
         const tid = auth.tenantId || 'tenant-default';
+        const delSup = await env.DB.prepare(`SELECT name FROM suppliers WHERE id = ? AND tenantId = ?`).bind(id, tid).first().catch(() => null);
         await env.DB.prepare(`DELETE FROM suppliers WHERE id = ? AND tenantId = ?`).bind(id, tid).run();
-        try { await writeSecurityAudit(auth, 'delete', routeType, id); } catch (_) {}
+        try {
+          await writeSecurityAudit(auth, 'delete', routeType, id);
+          await appendTenantAuditRecord(tid, auth.user?.name || 'Staff', 'delete', 'suppliers', `${delSup?.name || id} (${id})`);
+        } catch (_) {}
         return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
       }
     }
@@ -2977,11 +3418,14 @@ globalThis.__neoSchemaReady = true;
         const tidPo = auth.tenantId || 'tenant-default';
         const branchId = await resolveBranchId(tidPo, body.branchId || requestBranchId());
         if (!branchAllowedForAuth(auth, branchId)) return json({ error: 'Not allowed to post purchases for this location.' }, 403);
+        const initPoHist = Array.isArray(body.paymentHistory) && body.paymentHistory.length
+          ? body.paymentHistory
+          : ((Number(body.paidAmount) || 0) > 0 ? [{ id: `popay-${Date.now()}`, date: new Date().toISOString(), amount: Number(body.paidAmount) || 0, paymentMethod: body.paymentMethod || 'Cash', mpesaCode: body.mpesaCode || '' }] : []);
         try {
           await env.DB.prepare(
             `INSERT INTO purchase_orders (id, date, supplierId, supplierName, itemId, itemName, quantity, cost, amount, paidAmount, balanceDue, paymentMethod, paymentStatus, workflowStatus, deadline, taxAmount, taxRate, returnedQty, returnHistory, createdBy, cogsBooked, received, tenantId, taxInclusive, paymentHistory, branchId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
-            body.id, body.date, body.supplierId || '', body.supplierName, body.itemId || '', body.itemName, body.quantity || 1, body.cost || 0, body.amount || 0, body.paidAmount || 0, body.balanceDue || 0, body.paymentMethod || 'Cash', body.paymentStatus || 'Unpaid', body.workflowStatus || 'Draft', body.deadline || '', body.taxAmount || 0, body.taxRate || 0, body.returnedQty || 0, JSON.stringify(body.returnHistory || []), body.createdBy || '', body.cogsBooked || 0, body.received ? 1 : 0, tidPo, body.taxInclusive ? 1 : 0, JSON.stringify(body.paymentHistory || []), branchId
+            body.id, body.date, body.supplierId || '', body.supplierName, body.itemId || '', body.itemName, body.quantity || 1, body.cost || 0, body.amount || 0, body.paidAmount || 0, body.balanceDue || 0, body.paymentMethod || 'Cash', body.paymentStatus || 'Unpaid', body.workflowStatus || 'Draft', body.deadline || '', body.taxAmount || 0, body.taxRate || 0, body.returnedQty || 0, JSON.stringify(body.returnHistory || []), body.createdBy || '', body.cogsBooked || 0, body.received ? 1 : 0, tidPo, body.taxInclusive ? 1 : 0, JSON.stringify(initPoHist), branchId
           ).run();
           try {
             const itemsJson = typeof body.items === 'string' ? body.items : JSON.stringify(body.items || []);
@@ -2991,34 +3435,50 @@ globalThis.__neoSchemaReady = true;
           await env.DB.prepare(
             `INSERT INTO purchase_orders (id, date, supplierId, supplierName, itemId, itemName, quantity, cost, amount, paidAmount, balanceDue, paymentMethod, paymentStatus, workflowStatus, deadline, taxAmount, taxRate, returnedQty, returnHistory, createdBy, cogsBooked, received, tenantId, taxInclusive, paymentHistory) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
-            body.id, body.date, body.supplierId || '', body.supplierName, body.itemId || '', body.itemName, body.quantity || 1, body.cost || 0, body.amount || 0, body.paidAmount || 0, body.balanceDue || 0, body.paymentMethod || 'Cash', body.paymentStatus || 'Unpaid', body.workflowStatus || 'Draft', body.deadline || '', body.taxAmount || 0, body.taxRate || 0, body.returnedQty || 0, JSON.stringify(body.returnHistory || []), body.createdBy || '', body.cogsBooked || 0, body.received ? 1 : 0, tidPo, body.taxInclusive ? 1 : 0, JSON.stringify(body.paymentHistory || [])
+            body.id, body.date, body.supplierId || '', body.supplierName, body.itemId || '', body.itemName, body.quantity || 1, body.cost || 0, body.amount || 0, body.paidAmount || 0, body.balanceDue || 0, body.paymentMethod || 'Cash', body.paymentStatus || 'Unpaid', body.workflowStatus || 'Draft', body.deadline || '', body.taxAmount || 0, body.taxRate || 0, body.returnedQty || 0, JSON.stringify(body.returnHistory || []), body.createdBy || '', body.cogsBooked || 0, body.received ? 1 : 0, tidPo, body.taxInclusive ? 1 : 0, JSON.stringify(initPoHist)
           ).run();
         }
         return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
       }
       if (request.method === 'PUT' && id) {
         const body = await request.json();
+        const tidPo = auth.tenantId || 'tenant-default';
+        const existingPo = await env.DB.prepare('SELECT workflowStatus, paidAmount, amount, supplierName, paymentHistory FROM purchase_orders WHERE id = ? AND tenantId = ?').bind(id, tidPo).first().catch(() => null);
+        // Enforce Purchase Approval Limit when moving from Draft -> Approved
+        if (existingPo && existingPo.workflowStatus === 'Draft' && body.workflowStatus === 'Approved') {
+          try {
+            await ensureTenantSettingsSchema();
+            const ts = await env.DB.prepare('SELECT poApprovalLimit FROM tenant_settings WHERE tenantId = ? LIMIT 1').bind(tidPo).first();
+            const limitAmt = parseFloat(ts?.poApprovalLimit) || 0;
+            const poAmt = parseFloat(body.amount ?? existingPo.amount) || 0;
+            if (limitAmt > 0 && poAmt > limitAmt && !auth.isAdmin && !can(auth, 'purchase', 'delete')) {
+              return json({ error: `Purchase order (${poAmt.toLocaleString()}) exceeds the limit (${limitAmt.toLocaleString()}) and must be approved by Admin.` }, 403);
+            }
+          } catch (_) {}
+        }
+        const histRaw = body.paymentHistory != null ? (typeof body.paymentHistory === 'string' ? body.paymentHistory : JSON.stringify(body.paymentHistory)) : (existingPo?.paymentHistory || '[]');
         await env.DB.prepare(
           `UPDATE purchase_orders SET date = ?, supplierId = ?, supplierName = ?, itemId = ?, itemName = ?, quantity = ?, cost = ?, amount = ?, paidAmount = ?, balanceDue = ?, paymentMethod = ?, paymentStatus = ?, workflowStatus = ?, deadline = ?, taxAmount = ?, taxRate = ?, returnedQty = ?, returnHistory = ?, createdBy = ?, cogsBooked = ?, received = ?, taxInclusive = ?, paymentHistory = ? WHERE id = ? AND tenantId = ?`
         ).bind(
-          body.date, body.supplierId || '', body.supplierName, body.itemId || '', body.itemName, body.quantity || 1, body.cost || 0, body.amount || 0, body.paidAmount || 0, body.balanceDue || 0, body.paymentMethod || 'Cash', body.paymentStatus || 'Unpaid', body.workflowStatus || 'Draft', body.deadline || '', body.taxAmount || 0, body.taxRate || 0, body.returnedQty || 0, JSON.stringify(body.returnHistory || []), body.createdBy || '', body.cogsBooked || 0, body.received ? 1 : 0, body.taxInclusive ? 1 : 0, JSON.stringify(body.paymentHistory || []), id, auth.tenantId || 'tenant-default'
+          body.date, body.supplierId || '', body.supplierName, body.itemId || '', body.itemName, body.quantity || 1, body.cost || 0, body.amount || 0, body.paidAmount || 0, body.balanceDue || 0, body.paymentMethod || 'Cash', body.paymentStatus || 'Unpaid', body.workflowStatus || 'Draft', body.deadline || '', body.taxAmount || 0, body.taxRate || 0, body.returnedQty || 0, JSON.stringify(body.returnHistory || []), body.createdBy || '', body.cogsBooked || 0, body.received ? 1 : 0, body.taxInclusive ? 1 : 0, histRaw, id, tidPo
         ).run();
         try {
           if (body.items != null) {
             const itemsJson = typeof body.items === 'string' ? body.items : JSON.stringify(body.items || []);
-            await env.DB.prepare(`UPDATE purchase_orders SET items = ?, groupId = ? WHERE id = ? AND tenantId = ?`).bind(itemsJson, body.groupId || '', id, auth.tenantId || 'tenant-default').run();
+            await env.DB.prepare(`UPDATE purchase_orders SET items = ?, groupId = ? WHERE id = ? AND tenantId = ?`).bind(itemsJson, body.groupId || '', id, tidPo).run();
           }
         } catch (_) {}
         try {
-          const prev = await env.DB.prepare('SELECT paidAmount, supplierName, paymentMethod FROM purchase_orders WHERE id = ? AND tenantId = ?').bind(id, auth.tenantId || 'tenant-default').first();
-          // Use body vs prior payment history length for payment events
-          const hist = body.paymentHistory || [];
-          const histArr = typeof hist === 'string' ? (() => { try { return JSON.parse(hist); } catch { return []; } })() : hist;
-          if (Array.isArray(histArr) && histArr.length) {
+          const histArr = typeof histRaw === 'string' ? (() => { try { return JSON.parse(histRaw); } catch { return []; } })() : histRaw;
+          const prevPaidAmt = existingPo ? (parseFloat(existingPo.paidAmount) || 0) : 0;
+          const nextPaidAmt = parseFloat(body.paidAmount) || 0;
+          const deltaPoPay = Math.round((nextPaidAmt - prevPaidAmt) * 100) / 100;
+          if (Array.isArray(histArr) && histArr.length && deltaPoPay > 0) {
             const last = histArr[histArr.length - 1];
-            const payAmt = Number(last.amount || last.payAmount) || 0;
+            const payAmt = Number(last.amount || last.payAmount || deltaPoPay) || 0;
             if (payAmt > 0) {
-              await journalPurchasePayment(auth, { id, supplierName: body.supplierName }, payAmt, last.method || body.paymentMethod, body.branchId || '', id + '-pay-' + histArr.length + '-' + payAmt);
+              await journalPurchasePayment(auth, { id, supplierName: body.supplierName }, payAmt, last.paymentMethod || last.method || body.paymentMethod, body.branchId || '', id + '-pay-' + histArr.length + '-' + payAmt);
+              await appendTenantAuditRecord(tidPo, auth.user?.name || 'Staff', 'payment', 'purchase_orders', `PO ${id} (${body.supplierName || ''}) — Paid ${payAmt} via ${last.paymentMethod || last.method || body.paymentMethod || 'Cash'}`);
             }
           }
         } catch (_) {}
@@ -3029,9 +3489,11 @@ globalThis.__neoSchemaReady = true;
         // Cascade: remove this PO and any multi-item siblings (same groupId), which also drops tax + paymentHistory on those rows
         let groupId = null;
         let idsToClear = [id];
+        let delSupplier = '';
         try {
-          const row = await env.DB.prepare('SELECT groupId FROM purchase_orders WHERE id = ? AND tenantId = ?').bind(id, tid).first();
+          const row = await env.DB.prepare('SELECT groupId, supplierName FROM purchase_orders WHERE id = ? AND tenantId = ?').bind(id, tid).first();
           groupId = row && row.groupId ? String(row.groupId) : null;
+          delSupplier = row?.supplierName || '';
           if (groupId) {
             const sibs = (await env.DB.prepare('SELECT id FROM purchase_orders WHERE tenantId = ? AND groupId = ?').bind(tid, groupId).all()).results || [];
             idsToClear = sibs.map(s => s.id);
@@ -3052,7 +3514,10 @@ globalThis.__neoSchemaReady = true;
         } else {
           await env.DB.prepare(`DELETE FROM purchase_orders WHERE id = ? AND tenantId = ?`).bind(id, tid).run();
         }
-        try { await writeSecurityAudit(auth, 'delete', routeType, id + (groupId ? ' group:' + groupId : '')); } catch (_) {}
+        try {
+          await writeSecurityAudit(auth, 'delete', routeType, id + (groupId ? ' group:' + groupId : ''));
+          await appendTenantAuditRecord(tid, auth.user?.name || 'Staff', 'delete', 'purchase_orders', `Deleted PO ${id}${delSupplier ? ' (' + delSupplier + ')' : ''}`);
+        } catch (_) {}
         return new Response(JSON.stringify({ success: true, deletedGroupId: groupId || null }), { headers: { 'Content-Type': 'application/json' } });
       }
     }
@@ -3314,7 +3779,10 @@ globalThis.__neoSchemaReady = true;
         }
       } catch (_) {}
       await env.DB.batch(statements);
-      try { await writeSecurityAudit(auth, 'purchase-return', 'purchase_orders', poId + ' qty ' + retQty); } catch (_) {}
+      try {
+        await writeSecurityAudit(auth, 'purchase-return', 'purchase_orders', poId + ' qty ' + retQty);
+        await appendTenantAuditRecord(tenantId, auth.user?.name || 'Manager', 'purchase-return', 'purchase_orders', `PO ${poId} (${po.supplierName || ''}) — Returned ${retQty} unit(s), value ${returnValue} (${settlement})`);
+      } catch (_) {}
       try {
         await journalPurchaseReturn(auth, po, returnValue, cashRefund, supplierCredit, payMethod, po.branchId || '', poId + '-ret-' + newReturned + '-' + returnValue);
       } catch (_) {}
@@ -3335,47 +3803,47 @@ globalThis.__neoSchemaReady = true;
     }
 
     // 14. SHOP PROFILE CRUD
+    // 14. SHOP PROFILE CRUD
     if (routeType === 'shop-profile') {
       if (request.method === 'PUT' || request.method === 'POST') {
-        try { await env.DB.prepare(`CREATE TABLE IF NOT EXISTS shop_profile (
-          id TEXT PRIMARY KEY, name TEXT, tagline TEXT, currency TEXT, phone TEXT, location TEXT, tenantId TEXT
-        )`).run(); } catch (_) {}
-        try { await env.DB.prepare(`ALTER TABLE shop_profile ADD COLUMN tenantId TEXT`).run(); } catch (_) {}
-        try { await env.DB.prepare(`ALTER TABLE shop_profile ADD COLUMN tagline TEXT`).run(); } catch (_) {}
         const body = await request.json();
         const tid = auth.tenantId || 'tenant-default';
-        const name = body.name || '';
-        const tagline = body.tagline || '';
-        const currency = body.currency || 'KSh';
-        const phone = body.phone || '';
-        const location = body.location || '';
+        const name = String(body.name || '').trim();
+        const tagline = String(body.tagline || '').trim();
+        const currency = String(body.currency || 'KSh').trim();
+        const phone = String(body.phone || '').trim();
+        const location = String(body.location || '').trim();
+        const logo = body.logo !== undefined ? String(body.logo || '').trim() : '';
+        const creditPolicy = body.creditPolicy === 'stop' ? 'stop' : (body.creditPolicy === 'warn' ? 'warn' : 'warn');
+        try { await env.DB.prepare(`ALTER TABLE shop_profile ADD COLUMN logo TEXT`).run(); } catch (_) {}
+        try { await env.DB.prepare(`ALTER TABLE shop_profile ADD COLUMN creditPolicy TEXT DEFAULT 'warn'`).run(); } catch (_) {}
         let saved = false;
         try {
-          const existing = await env.DB.prepare(`SELECT id FROM shop_profile WHERE tenantId = ? LIMIT 1`).bind(tid).first();
+          const existing = await env.DB.prepare(`SELECT id, logo, creditPolicy FROM shop_profile WHERE tenantId = ? OR id = ? LIMIT 1`).bind(tid, tid).first();
           if (existing) {
+            const finalLogo = body.logo !== undefined ? logo : (existing.logo || '');
+            const finalPolicy = body.creditPolicy !== undefined ? creditPolicy : (existing.creditPolicy || 'warn');
             await env.DB.prepare(
-              `UPDATE shop_profile SET name = ?, tagline = ?, currency = ?, phone = ?, location = ? WHERE tenantId = ?`
-            ).bind(name, tagline, currency, phone, location, tid).run();
+              `UPDATE shop_profile SET name = ?, tagline = ?, currency = ?, phone = ?, location = ?, logo = ?, creditPolicy = ?, tenantId = ? WHERE id = ? OR tenantId = ?`
+            ).bind(name, tagline, currency, phone, location, finalLogo, finalPolicy, tid, existing.id, tid).run();
             saved = true;
           } else {
             await env.DB.prepare(
-              `INSERT INTO shop_profile (id, name, tagline, currency, phone, location, tenantId) VALUES (?, ?, ?, ?, ?, ?, ?)`
-            ).bind(String(tid), name, tagline, currency, phone, location, tid).run();
+              `INSERT INTO shop_profile (id, name, tagline, currency, phone, location, logo, creditPolicy, tenantId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            ).bind(String(tid), name, tagline, currency, phone, location, logo, creditPolicy, tid).run();
             saved = true;
           }
         } catch (e1) {
           try {
             await env.DB.prepare(
-              `INSERT INTO shop_profile (id, name, tagline, currency, phone, location, tenantId) VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET name = excluded.name, tagline = excluded.tagline, currency = excluded.currency, phone = excluded.phone, location = excluded.location, tenantId = excluded.tenantId`
-            ).bind(String(tid), name, tagline, currency, phone, location, tid).run();
+              `UPDATE shop_profile SET name = ?, tagline = ?, currency = ?, phone = ?, location = ?, tenantId = ? WHERE id = ? OR tenantId = ?`
+            ).bind(name, tagline, currency, phone, location, tid, String(tid), tid).run();
             saved = true;
           } catch (e2) {
             try {
               await env.DB.prepare(
-                `INSERT INTO shop_profile (id, name, tagline, currency, phone, location) VALUES (1, ?, ?, ?, ?, ?)
-                 ON CONFLICT(id) DO UPDATE SET name = ?, tagline = ?, currency = ?, phone = ?, location = ?`
-              ).bind(name, tagline, currency, phone, location, name, tagline, currency, phone, location).run();
+                `INSERT INTO shop_profile (id, name, tagline, currency, phone, location, tenantId) VALUES (?, ?, ?, ?, ?, ?, ?)`
+              ).bind(String(tid), name, tagline, currency, phone, location, tid).run();
               saved = true;
             } catch (_) {}
           }
@@ -3385,45 +3853,18 @@ globalThis.__neoSchemaReady = true;
           try { await env.DB.prepare(`UPDATE tenants SET name = ? WHERE id = ?`).bind(name, tid).run(); } catch (_) {}
         }
         if (!saved) return json({ error: 'Failed to save shop profile' }, 500);
-        return new Response(JSON.stringify({ success: true, name }), { headers: { 'Content-Type': 'application/json' } });
+        const profile = { id: String(tid), name, tagline, currency, phone, location, logo, creditPolicy, tenantId: tid };
+        return json({ success: true, name, profile });
+      }
+      if (request.method === 'GET') {
+        const tid = (auth && auth.tenantId) || 'tenant-default';
+        let row = await env.DB.prepare('SELECT * FROM shop_profile WHERE tenantId = ? OR id = ? LIMIT 1').bind(tid, tid).first();
+        if (!row && tid === 'tenant-default') row = await env.DB.prepare('SELECT * FROM shop_profile WHERE id = 1').first();
+        return json({ profile: row || null });
       }
     }
 
-    // 15. WEBSITE SETTINGS CRUD
-  if (routeType === 'website-settings') {
-    if (request.method === 'PUT' || request.method === 'POST') {
-      const body = await request.json();
-      const tid = auth.tenantId || 'tenant-default';
-      try {
-        const existing = await env.DB.prepare(`SELECT id FROM website_settings WHERE tenantId = ? LIMIT 1`).bind(tid).first();
-        if (existing) {
-          await env.DB.prepare(
-            `UPDATE website_settings SET fontFamily=?, baseFontSize=?, primaryColor=?, headingWeight=?, headingTransform=?, cardGlow=?, catalogHeight=?, catalogObjectFit=?, heroTitle=?, heroSubtitle=?, heroImage=?, aboutTitle=?, aboutText=?, contactAddress=?, footerText=?, whatsappPhone=? WHERE tenantId = ?`
-          ).bind(
-            body.fontFamily || 'Inter', body.baseFontSize || 14, body.primaryColor || '#10B981', body.headingWeight || 'font-bold', body.headingTransform || 'none', body.cardGlow || 'medium', body.catalogHeight || 200, body.catalogObjectFit || 'cover', body.heroTitle || '', body.heroSubtitle || '', body.heroImage || '', body.aboutTitle || '', body.aboutText || '', body.contactAddress || '', body.footerText || '', body.whatsappPhone || '', tid
-          ).run();
-        } else {
-          await env.DB.prepare(
-            `INSERT INTO website_settings (id, fontFamily, baseFontSize, primaryColor, headingWeight, headingTransform, cardGlow, catalogHeight, catalogObjectFit, heroTitle, heroSubtitle, heroImage, aboutTitle, aboutText, contactAddress, footerText, whatsappPhone, tenantId) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).bind(
-            tid === 'tenant-default' ? 1 : tid, body.fontFamily || 'Inter', body.baseFontSize || 14, body.primaryColor || '#10B981', body.headingWeight || 'font-bold', body.headingTransform || 'none', body.cardGlow || 'medium', body.catalogHeight || 200, body.catalogObjectFit || 'cover', body.heroTitle || '', body.heroSubtitle || '', body.heroImage || '', body.aboutTitle || '', body.aboutText || '', body.contactAddress || '', body.footerText || '', body.whatsappPhone || '', tid
-          ).run();
-        }
-      } catch (_) {
-        await env.DB.prepare(
-          `INSERT INTO website_settings (id, fontFamily, baseFontSize, primaryColor, headingWeight, headingTransform, cardGlow, catalogHeight, catalogObjectFit, heroTitle, heroSubtitle, heroImage, aboutTitle, aboutText, contactAddress, footerText, whatsappPhone) 
-           VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET 
-             fontFamily=?, baseFontSize=?, primaryColor=?, headingWeight=?, headingTransform=?, cardGlow=?, catalogHeight=?, catalogObjectFit=?, heroTitle=?, heroSubtitle=?, heroImage=?, aboutTitle=?, aboutText=?, contactAddress=?, footerText=?, whatsappPhone=?`
-        ).bind(
-          body.fontFamily || 'Inter', body.baseFontSize || 14, body.primaryColor || '#10B981', body.headingWeight || 'font-bold', body.headingTransform || 'none', body.cardGlow || 'medium', body.catalogHeight || 200, body.catalogObjectFit || 'cover', body.heroTitle || '', body.heroSubtitle || '', body.heroImage || '', body.aboutTitle || '', body.aboutText || '', body.contactAddress || '', body.footerText || '', body.whatsappPhone || '',
-          body.fontFamily || 'Inter', body.baseFontSize || 14, body.primaryColor || '#10B981', body.headingWeight || 'font-bold', body.headingTransform || 'none', body.cardGlow || 'medium', body.catalogHeight || 200, body.catalogObjectFit || 'cover', body.heroTitle || '', body.heroSubtitle || '', body.heroImage || '', body.aboutTitle || '', body.aboutText || '', body.contactAddress || '', body.footerText || '', body.whatsappPhone || ''
-        ).run();
-      }
-      return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
-    }
-  }
+
 
 
     // 16. EMPLOYEES CRUD
@@ -4698,24 +5139,19 @@ globalThis.__neoSchemaReady = true;
       }
     }
 
-    // TENANT SETTINGS blob (payment methods, sales terms, loyalty, etims, targets, tasks, cashups, auditLog)
+    // TENANT SETTINGS blob (payment methods, sales terms, loyalty, etims, targets, tasks, cashups, auditLog, itemVariances, poApprovalLimit, returnRequests)
     if (routeType === 'tenant-settings' || routeType === 'tenant_settings') {
       const tid = auth.tenantId || 'tenant-default';
-      try {
-        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS tenant_settings (
-          id TEXT PRIMARY KEY, tenantId TEXT UNIQUE, paymentMethods TEXT, salesTerms TEXT,
-          loyalty TEXT, etims TEXT, salesTargets TEXT, tasks TEXT, cashups TEXT, auditLog TEXT, updatedAt INTEGER
-        )`).run();
-      } catch (_) {}
-      for (const col of ['tasks TEXT', 'cashups TEXT', 'auditLog TEXT', 'itemVariances TEXT', 'purchaseApprovalLimit REAL', 'pendingApprovals TEXT']) {
-        try { await env.DB.prepare(`ALTER TABLE tenant_settings ADD COLUMN ${col}`).run(); } catch (_) {}
-      }
+      await ensureTenantSettingsSchema();
       if (request.method === 'GET') {
         let row = await env.DB.prepare(`SELECT * FROM tenant_settings WHERE tenantId = ? LIMIT 1`).bind(tid).first();
         return json({ settings: row || null });
       }
       if (request.method === 'PUT' || request.method === 'POST') {
         const body = await request.json();
+        if (body.poApprovalLimit !== undefined && !auth.isAdmin && !can(auth, 'purchase', 'delete')) {
+          return deny('Only users with Purchase Delete permission (or Admin) can set the Purchase Approval Limit.');
+        }
         const pm = body.paymentMethods != null ? (typeof body.paymentMethods === 'string' ? body.paymentMethods : JSON.stringify(body.paymentMethods)) : null;
         const st = body.salesTerms != null ? (typeof body.salesTerms === 'string' ? body.salesTerms : JSON.stringify(body.salesTerms)) : null;
         const loy = body.loyalty != null ? (typeof body.loyalty === 'string' ? body.loyalty : JSON.stringify(body.loyalty)) : null;
@@ -4723,10 +5159,11 @@ globalThis.__neoSchemaReady = true;
         const targets = body.salesTargets != null ? (typeof body.salesTargets === 'string' ? body.salesTargets : JSON.stringify(body.salesTargets)) : null;
         const tasks = body.tasks != null ? (typeof body.tasks === 'string' ? body.tasks : JSON.stringify(body.tasks)) : null;
         const cashups = body.cashups != null ? (typeof body.cashups === 'string' ? body.cashups : JSON.stringify(body.cashups)) : null;
-        const purchaseApprovalLimit = body.purchaseApprovalLimit != null ? Number(body.purchaseApprovalLimit) : null;
-        const pendingApprovals = body.pendingApprovals != null ? (typeof body.pendingApprovals === 'string' ? body.pendingApprovals : JSON.stringify(body.pendingApprovals)) : null;
         const auditLog = body.auditLog != null ? (typeof body.auditLog === 'string' ? body.auditLog : JSON.stringify(body.auditLog)) : null;
         const itemVariances = body.itemVariances != null ? (typeof body.itemVariances === 'string' ? body.itemVariances : JSON.stringify(body.itemVariances)) : null;
+        const poApprovalLimit = body.poApprovalLimit !== undefined && body.poApprovalLimit !== null ? Math.max(0, parseFloat(body.poApprovalLimit) || 0) : null;
+        const returnRequests = body.returnRequests != null ? (typeof body.returnRequests === 'string' ? body.returnRequests : JSON.stringify(body.returnRequests)) : null;
+        const creditPolicy = body.creditPolicy !== undefined ? (body.creditPolicy === 'stop' ? 'stop' : 'warn') : null;
         const existing = await env.DB.prepare(`SELECT * FROM tenant_settings WHERE tenantId = ? LIMIT 1`).bind(tid).first();
         if (existing) {
           try {
@@ -4741,9 +5178,12 @@ globalThis.__neoSchemaReady = true;
                 cashups = COALESCE(?, cashups),
                 auditLog = COALESCE(?, auditLog),
                 itemVariances = COALESCE(?, itemVariances),
+                poApprovalLimit = COALESCE(?, poApprovalLimit),
+                returnRequests = COALESCE(?, returnRequests),
+                creditPolicy = COALESCE(?, creditPolicy),
                 updatedAt = ?
                WHERE tenantId = ?`
-            ).bind(pm, st, loy, et, targets, tasks, cashups, auditLog, itemVariances, Date.now(), tid).run();
+            ).bind(pm, st, loy, et, targets, tasks, cashups, auditLog, itemVariances, poApprovalLimit, returnRequests, creditPolicy, Date.now(), tid).run();
           } catch (_) {
             await env.DB.prepare(
               `UPDATE tenant_settings SET
@@ -4762,9 +5202,9 @@ globalThis.__neoSchemaReady = true;
         } else {
           try {
             await env.DB.prepare(
-              `INSERT INTO tenant_settings (id, tenantId, paymentMethods, salesTerms, loyalty, etims, salesTargets, tasks, cashups, auditLog, itemVariances, updatedAt)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-            ).bind(tid, tid, pm, st, loy, et, targets, tasks, cashups, auditLog, itemVariances, Date.now()).run();
+              `INSERT INTO tenant_settings (id, tenantId, paymentMethods, salesTerms, loyalty, etims, salesTargets, tasks, cashups, auditLog, itemVariances, poApprovalLimit, returnRequests, creditPolicy, updatedAt)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            ).bind(tid, tid, pm, st, loy, et, targets, tasks, cashups, auditLog, itemVariances, poApprovalLimit ?? 0, returnRequests, creditPolicy || 'warn', Date.now()).run();
           } catch (_) {
             await env.DB.prepare(
               `INSERT INTO tenant_settings (id, tenantId, paymentMethods, salesTerms, loyalty, etims, salesTargets, tasks, cashups, auditLog, updatedAt)
@@ -4772,15 +5212,9 @@ globalThis.__neoSchemaReady = true;
             ).bind(tid, tid, pm, st, loy, et, targets, tasks, cashups, auditLog, Date.now()).run();
           }
         }
-        // Extra fields (approval limit / pending approvals)
-        try {
-          if (purchaseApprovalLimit != null) {
-            await env.DB.prepare(`UPDATE tenant_settings SET purchaseApprovalLimit = ?, updatedAt = ? WHERE tenantId = ?`).bind(purchaseApprovalLimit, Date.now(), tid).run();
-          }
-          if (pendingApprovals != null) {
-            await env.DB.prepare(`UPDATE tenant_settings SET pendingApprovals = ?, updatedAt = ? WHERE tenantId = ?`).bind(pendingApprovals, Date.now(), tid).run();
-          }
-        } catch (_) {}
+        if (poApprovalLimit !== null) {
+          try { await appendTenantAuditRecord(tid, auth.user?.name || 'Admin', 'update', 'purchase_limit', `PO Admin Approval Limit set to ${poApprovalLimit}`); } catch (_) {}
+        }
         return json({ success: true });
       }
     }
